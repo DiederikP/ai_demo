@@ -1,0 +1,16 @@
+Jane Smith
+Senior Data Scientist
+Email: jane.smith@email.com
+Phone: +1-555-0456
+
+EXPERIENCE:
+- Senior Data Scientist at DataCorp (2021-2024)
+- Data Analyst at Analytics Inc (2019-2021)
+
+SKILLS:
+- Python, R, SQL, Machine Learning
+- TensorFlow, PyTorch, Scikit-learn
+- AWS, Docker, Kubernetes
+
+EDUCATION:
+- Master of Data Science, Tech University (2019)

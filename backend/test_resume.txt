@@ -1,0 +1,16 @@
+John Doe
+Software Engineer
+Email: john.doe@email.com
+Phone: +1-555-0123
+
+EXPERIENCE:
+- Senior Software Engineer at Tech Corp (2020-2024)
+- Software Engineer at Startup Inc (2018-2020)
+
+SKILLS:
+- Python, JavaScript, React, Node.js
+- AWS, Docker, Kubernetes
+- Machine Learning, Data Science
+
+EDUCATION:
+- Bachelor of Computer Science, University of Technology (2018)
