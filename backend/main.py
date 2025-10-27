@@ -12,7 +12,7 @@ from io import BytesIO
 from dotenv import load_dotenv
 import traceback
 import sys
-from sqlalchemy import create_engine, Column, String, Integer, Text, ForeignKey, Enum, DateTime
+from sqlalchemy import create_engine, Column, String, Integer, Text, ForeignKey, Enum, DateTime, Boolean
 from sqlalchemy.orm import sessionmaker, declarative_base, relationship
 from sqlalchemy.sql import func
 import enum
@@ -274,9 +274,11 @@ class CandidateDB(Base):
     name = Column(String, nullable=False)
     email = Column(String)
     resume_text = Column(Text, nullable=False)
+    motivational_letter = Column(Text)  # Optional motivational letter
     experience_years = Column(Integer)
     skills = Column(Text)
     education = Column(String)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
     job = relationship("JobPostingDB", back_populates="candidates")
     evaluations = relationship("EvaluationDB", back_populates="candidate")
 
@@ -289,7 +291,85 @@ class EvaluationDB(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     candidate = relationship("CandidateDB", back_populates="evaluations")
 
+class PersonaDB(Base):
+    __tablename__ = "personas"
+    id = Column(String, primary_key=True, default=lambda: str(uuid4()))
+    name = Column(String, nullable=False, unique=True)
+    display_name = Column(String, nullable=False)
+    system_prompt = Column(Text, nullable=False)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
 Base.metadata.create_all(bind=engine)
+
+# -----------------------------
+# Seed default personas
+# -----------------------------
+
+def seed_default_personas():
+    """Seed the database with default evaluation personas"""
+    try:
+        db = SessionLocal()
+        
+        # Check if personas already exist
+        existing_personas = db.query(PersonaDB).count()
+        if existing_personas > 0:
+            db.close()
+            return
+        
+        default_personas = [
+            {
+                "name": "finance",
+                "display_name": "Finance Director",
+                "system_prompt": """You are a Finance Director evaluating a candidate. Focus on:
+- Cost-benefit analysis of hiring this person
+- Budget impact and ROI potential
+- Financial risk assessment
+- Salary expectations vs market rate
+- Long-term financial value to the company
+
+Provide a structured evaluation with strengths, weaknesses, risks, and final verdict."""
+            },
+            {
+                "name": "hiring_manager",
+                "display_name": "Hiring Manager",
+                "system_prompt": """You are a Senior Hiring Manager with 10+ years experience. Focus on:
+- Cultural fit and team dynamics
+- Leadership potential and growth trajectory
+- Past performance indicators
+- Communication skills and soft skills
+- Overall hireability and market competitiveness
+
+Provide a structured evaluation with strengths, weaknesses, risks, and final verdict."""
+            },
+            {
+                "name": "tech_lead",
+                "display_name": "Technical Lead",
+                "system_prompt": """You are a Technical Lead evaluating a candidate. Focus on:
+- Technical skills and expertise depth
+- Problem-solving approach and methodology
+- Code quality and best practices
+- Learning agility and technology adoption
+- Technical leadership potential
+
+Provide a structured evaluation with strengths, weaknesses, risks, and final verdict."""
+            }
+        ]
+        
+        for persona_data in default_personas:
+            persona = PersonaDB(**persona_data)
+            db.add(persona)
+        
+        db.commit()
+        db.close()
+        print("Default personas seeded successfully")
+        
+    except Exception as e:
+        print(f"Error seeding default personas: {str(e)}")
+
+# Seed personas on startup
+seed_default_personas()
 
 # -----------------------------
 # Pydantic models
@@ -338,6 +418,160 @@ async def root():
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "service": "Barnes AI Hiring Assistant"}
+
+# -----------------------------
+# Persona CRUD endpoints
+# -----------------------------
+
+@app.get("/personas")
+async def get_personas():
+    """Get all active personas"""
+    try:
+        db = SessionLocal()
+        personas = db.query(PersonaDB).filter(PersonaDB.is_active == True).all()
+        db.close()
+        
+        return {
+            "success": True,
+            "personas": [
+                {
+                    "id": persona.id,
+                    "name": persona.name,
+                    "display_name": persona.display_name,
+                    "system_prompt": persona.system_prompt,
+                    "is_active": persona.is_active,
+                    "created_at": persona.created_at.isoformat() if persona.created_at else None
+                }
+                for persona in personas
+            ]
+        }
+        
+    except Exception as e:
+        print(f"Error getting personas: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get personas: {str(e)}")
+
+@app.post("/personas")
+async def create_persona(
+    name: str = Form(...),
+    display_name: str = Form(...),
+    system_prompt: str = Form(...)
+):
+    """Create a new evaluation persona"""
+    try:
+        db = SessionLocal()
+        
+        # Check if persona with this name already exists
+        existing = db.query(PersonaDB).filter(PersonaDB.name == name).first()
+        if existing:
+            db.close()
+            raise HTTPException(status_code=400, detail=f"Persona with name '{name}' already exists")
+        
+        persona = PersonaDB(
+            name=name,
+            display_name=display_name,
+            system_prompt=system_prompt
+        )
+        
+        db.add(persona)
+        db.commit()
+        db.refresh(persona)
+        db.close()
+        
+        return {
+            "success": True,
+            "message": "Persona created successfully",
+            "persona": {
+                "id": persona.id,
+                "name": persona.name,
+                "display_name": persona.display_name,
+                "system_prompt": persona.system_prompt
+            }
+        }
+        
+    except Exception as e:
+        print(f"Error creating persona: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to create persona: {str(e)}")
+
+@app.put("/personas/{persona_id}")
+async def update_persona(
+    persona_id: str,
+    name: Optional[str] = Form(None),
+    display_name: Optional[str] = Form(None),
+    system_prompt: Optional[str] = Form(None),
+    is_active: Optional[bool] = Form(None)
+):
+    """Update a persona"""
+    try:
+        db = SessionLocal()
+        
+        persona = db.query(PersonaDB).filter(PersonaDB.id == persona_id).first()
+        if not persona:
+            db.close()
+            raise HTTPException(status_code=404, detail="Persona not found")
+        
+        # Update only provided fields
+        if name is not None:
+            # Check if new name conflicts with existing persona
+            existing = db.query(PersonaDB).filter(PersonaDB.name == name, PersonaDB.id != persona_id).first()
+            if existing:
+                db.close()
+                raise HTTPException(status_code=400, detail=f"Persona with name '{name}' already exists")
+            persona.name = name
+        if display_name is not None:
+            persona.display_name = display_name
+        if system_prompt is not None:
+            persona.system_prompt = system_prompt
+        if is_active is not None:
+            persona.is_active = is_active
+        
+        db.commit()
+        db.refresh(persona)
+        db.close()
+        
+        return {
+            "success": True,
+            "message": "Persona updated successfully",
+            "persona": {
+                "id": persona.id,
+                "name": persona.name,
+                "display_name": persona.display_name,
+                "system_prompt": persona.system_prompt,
+                "is_active": persona.is_active
+            }
+        }
+        
+    except Exception as e:
+        print(f"Error updating persona: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to update persona: {str(e)}")
+
+@app.delete("/personas/{persona_id}")
+async def delete_persona(persona_id: str):
+    """Soft delete a persona (set is_active to False)"""
+    try:
+        db = SessionLocal()
+        
+        persona = db.query(PersonaDB).filter(PersonaDB.id == persona_id).first()
+        if not persona:
+            db.close()
+            raise HTTPException(status_code=404, detail="Persona not found")
+        
+        # Soft delete - set is_active to False
+        persona.is_active = False
+        db.commit()
+        db.close()
+        
+        return {
+            "success": True,
+            "message": f"Persona '{persona.display_name}' deactivated successfully"
+        }
+        
+    except Exception as e:
+        print(f"Error deleting persona: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete persona: {str(e)}")
+
+# -----------------------------
+# Job posting endpoints
+# -----------------------------
 
 @app.post("/upload-job-description")
 async def upload_job_description(
@@ -418,6 +652,100 @@ async def get_job_descriptions():
         print(f"Error getting job descriptions: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to get job descriptions: {str(e)}")
 
+@app.delete("/job-descriptions/{job_id}")
+async def delete_job_description(job_id: str):
+    """Delete a job description with safe cascade handling"""
+    try:
+        db = SessionLocal()
+        
+        # Check if job exists
+        job = db.query(JobPostingDB).filter(JobPostingDB.id == job_id).first()
+        if not job:
+            db.close()
+            raise HTTPException(status_code=404, detail="Job posting not found")
+        
+        # Check for associated candidates
+        candidates = db.query(CandidateDB).filter(CandidateDB.job_id == job_id).all()
+        if candidates:
+            # Option 1: Soft delete - set job_id to NULL for candidates
+            for candidate in candidates:
+                candidate.job_id = None
+            
+            # Delete associated evaluations
+            db.query(EvaluationDB).filter(
+                EvaluationDB.candidate_id.in_([c.id for c in candidates])
+            ).delete()
+        
+        # Delete the job posting
+        db.delete(job)
+        db.commit()
+        db.close()
+        
+        return {
+            "success": True,
+            "message": f"Job posting '{job.title}' deleted successfully",
+            "candidates_affected": len(candidates)
+        }
+        
+    except Exception as e:
+        print(f"Error deleting job description: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete job description: {str(e)}")
+
+@app.put("/job-descriptions/{job_id}")
+async def update_job_description(
+    job_id: str,
+    title: Optional[str] = Form(None),
+    company: Optional[str] = Form(None),
+    description: Optional[str] = Form(None),
+    requirements: Optional[str] = Form(None),
+    location: Optional[str] = Form(None),
+    salary_range: Optional[str] = Form(None)
+):
+    """Update a job description"""
+    try:
+        db = SessionLocal()
+        
+        job = db.query(JobPostingDB).filter(JobPostingDB.id == job_id).first()
+        if not job:
+            db.close()
+            raise HTTPException(status_code=404, detail="Job posting not found")
+        
+        # Update only provided fields
+        if title is not None:
+            job.title = title
+        if company is not None:
+            job.company = company
+        if description is not None:
+            job.description = description
+        if requirements is not None:
+            job.requirements = requirements
+        if location is not None:
+            job.location = location
+        if salary_range is not None:
+            job.salary_range = salary_range
+        
+        db.commit()
+        db.refresh(job)
+        db.close()
+        
+        return {
+            "success": True,
+            "message": "Job posting updated successfully",
+            "job": {
+                "id": job.id,
+                "title": job.title,
+                "company": job.company,
+                "description": job.description,
+                "requirements": job.requirements,
+                "location": job.location,
+                "salary_range": job.salary_range
+            }
+        }
+        
+    except Exception as e:
+        print(f"Error updating job description: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to update job description: {str(e)}")
+
 @app.post("/upload-resume")
 async def upload_resume(
     file: UploadFile = File(...),
@@ -426,7 +754,8 @@ async def upload_resume(
     experience_years: int = Form(...),
     skills: str = Form(...),
     education: str = Form(...),
-    job_id: str = Form(...)
+    job_id: str = Form(...),
+    motivational_letter: Optional[str] = Form(None)
 ):
     """Upload and process resume file"""
     try:
@@ -464,6 +793,7 @@ async def upload_resume(
             name=name,
             email=email,
             resume_text=resume_text,
+            motivational_letter=motivational_letter,
             experience_years=experience_years,
             skills="|".join(skills_list),
             education=education
@@ -491,7 +821,8 @@ async def upload_resume(
 async def evaluate_candidate(
     candidate_id: str = Form(...),
     persona: str = Form(...),
-    custom_prompt: Optional[str] = Form(None)
+    custom_prompt: Optional[str] = Form(None),
+    strictness: Optional[str] = Form("medium")
 ):
     """Evaluate candidate with specific persona"""
     try:
@@ -501,6 +832,17 @@ async def evaluate_candidate(
         if not candidate:
             db.close()
             raise HTTPException(status_code=404, detail="Candidate not found")
+        
+        # ENFORCE JOB-SPECIFIC EVALUATION: Must have job_id
+        if not candidate.job_id:
+            db.close()
+            raise HTTPException(status_code=400, detail="Evaluation requires a job posting. Please select a job before evaluating.")
+        
+        # Verify job posting exists
+        job = db.query(JobPostingDB).filter(JobPostingDB.id == candidate.job_id).first()
+        if not job:
+            db.close()
+            raise HTTPException(status_code=404, detail="Associated job posting not found")
         
         # Check if already evaluated
         eval_existing = db.query(EvaluationDB).filter(
@@ -518,50 +860,42 @@ async def evaluate_candidate(
             db.close()
             raise HTTPException(status_code=400, detail="Resume text is empty or invalid. Please re-upload the resume.")
         
-        # Prepare evaluation prompt
-        persona_prompts = {
-            "finance": """You are a Finance Director evaluating a candidate. Focus on:
-- Cost-benefit analysis of hiring this person
-- Budget impact and ROI potential
-- Financial risk assessment
-- Salary expectations vs market rate
-- Long-term financial value to the company
-
-Provide a structured evaluation with strengths, weaknesses, risks, and final verdict.""",
-            
-            "hiring": """You are a Senior Hiring Manager with 10+ years experience. Focus on:
-- Cultural fit and team dynamics
-- Leadership potential and growth trajectory
-- Past performance indicators
-- Communication skills and soft skills
-- Overall hireability and market competitiveness
-
-Provide a structured evaluation with strengths, weaknesses, risks, and final verdict.""",
-            
-            "tech": """You are a Technical Lead evaluating a candidate. Focus on:
-- Technical skills and expertise depth
-- Problem-solving approach and methodology
-- Code quality and best practices
-- Learning agility and technology adoption
-- Technical leadership potential
-
-Provide a structured evaluation with strengths, weaknesses, risks, and final verdict."""
-        }
+        # Get persona from database
+        persona_db = db.query(PersonaDB).filter(
+            PersonaDB.name == persona.lower(),
+            PersonaDB.is_active == True
+        ).first()
         
-        system_prompt = persona_prompts.get(persona.lower(), persona_prompts["hiring"])
+        if not persona_db:
+            db.close()
+            raise HTTPException(status_code=404, detail=f"Persona '{persona}' not found or inactive")
+        
+        system_prompt = persona_db.system_prompt
         if custom_prompt:
             system_prompt = custom_prompt
         
+        # Add strictness filter
+        strictness_instructions = {
+            "lenient": "Be lenient in your evaluation. Focus on potential and growth opportunities. Give candidates the benefit of the doubt.",
+            "medium": "Provide a balanced evaluation considering both strengths and areas for improvement.",
+            "strict": "Be thorough and critical in your evaluation. Focus on meeting all requirements and potential risks.",
+            "severe": "Be extremely strict and demanding. Only recommend candidates who exceed expectations in all areas."
+        }
+        
+        strictness_instruction = strictness_instructions.get(strictness.lower(), strictness_instructions["medium"])
+        
         # Add JSON format instruction to system prompt
-        system_prompt += """
+        system_prompt += f"""
+
+EVALUATION STRICTNESS: {strictness_instruction}
 
 IMPORTANT: You must respond with a valid JSON object in exactly this format:
-{
+{{
   "strengths": "Detailed analysis of candidate's strengths",
   "weaknesses": "Areas of concern or improvement needed", 
   "risk": "Risk assessment and potential issues",
   "verdict": "Final hiring recommendation with reasoning"
-}
+}}
 
 Do not include any text outside the JSON object. Be thorough, professional, and specific in your analysis."""
         
@@ -580,11 +914,19 @@ Salary Range: {job.salary_range}
 Description: {job.description}
 Requirements: {job.requirements}"""
         
+        # Include motivational letter if available
+        motivational_info = ""
+        if candidate.motivational_letter:
+            motivational_info = f"""
+
+MOTIVATIONAL LETTER:
+{candidate.motivational_letter}"""
+        
         # MAKE SURE we're sending clean text to OpenAI
-        user_prompt = f"""Please evaluate this candidate based on their CV and the specific job requirements:
+        user_prompt = f"""Please evaluate this candidate based on their CV, motivational letter (if provided), and the specific job requirements:
 
 CANDIDATE CV:
-{resume_text}{job_info}
+{resume_text}{motivational_info}{job_info}
 
 Provide a structured evaluation focusing on the perspective of a {persona}. Return your response as a valid JSON object with strengths, weaknesses, risk, and verdict fields."""
         
@@ -634,6 +976,64 @@ Provide a structured evaluation focusing on the perspective of a {persona}. Retu
             "success": False,
             "error": str(e)
         }
+
+@app.get("/candidates")
+async def get_candidates():
+    """Get all evaluated candidates with their evaluations"""
+    try:
+        db = SessionLocal()
+        
+        # Get candidates with their evaluations and job info
+        candidates = db.query(CandidateDB).all()
+        
+        result = []
+        for candidate in candidates:
+            # Get job info
+            job_info = None
+            if candidate.job_id:
+                job = db.query(JobPostingDB).filter(JobPostingDB.id == candidate.job_id).first()
+                if job:
+                    job_info = {
+                        "id": job.id,
+                        "title": job.title,
+                        "company": job.company,
+                        "location": job.location
+                    }
+            
+            # Get evaluations
+            evaluations = db.query(EvaluationDB).filter(EvaluationDB.candidate_id == candidate.id).all()
+            
+            result.append({
+                "id": candidate.id,
+                "name": candidate.name,
+                "email": candidate.email,
+                "experience_years": candidate.experience_years,
+                "skills": candidate.skills,
+                "education": candidate.education,
+                "created_at": candidate.created_at.isoformat() if candidate.created_at else None,
+                "job": job_info,
+                "evaluations": [
+                    {
+                        "id": eval.id,
+                        "persona": eval.persona.value if eval.persona else None,
+                        "result_summary": eval.result_summary,
+                        "created_at": eval.created_at.isoformat() if eval.created_at else None
+                    }
+                    for eval in evaluations
+                ],
+                "evaluation_count": len(evaluations)
+            })
+        
+        db.close()
+        
+        return {
+            "success": True,
+            "candidates": result
+        }
+        
+    except Exception as e:
+        print(f"Error getting candidates: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get candidates: {str(e)}")
 
 @app.post("/debate-candidate")
 async def debate_candidate(
