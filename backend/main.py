@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional, Dict
@@ -1051,12 +1051,23 @@ async def get_candidates():
 @app.post("/debate-candidate")
 async def debate_candidate(
     candidate_id: str = Form(...),
-    finance_prompt: str = Form(...),
-    hiring_prompt: str = Form(...),
-    tech_prompt: str = Form(...)
+    request: Request = None
 ):
-    """Multi-expert debate between all three personas"""
+    """Multi-expert debate between selected personas"""
     try:
+        # Get form data to extract dynamic persona prompts
+        form_data = await request.form()
+        
+        # Extract persona prompts dynamically
+        persona_prompts = {}
+        for key, value in form_data.items():
+            if key.endswith('_prompt'):
+                persona_name = key.replace('_prompt', '')
+                persona_prompts[persona_name] = value
+        
+        if not persona_prompts:
+            raise HTTPException(status_code=400, detail="No persona prompts provided")
+        
         db = SessionLocal()
         candidate = db.query(CandidateDB).filter(CandidateDB.id == candidate_id).first()
         
@@ -1079,18 +1090,22 @@ Salary Range: {job.salary_range}
 Description: {job.description}
 Requirements: {job.requirements}"""
         
-        # Create debate prompt
-        system_prompt = f"""You are facilitating a professional debate between three expert personas evaluating a candidate for a specific job. Each persona should speak in their role and provide their perspective on whether to hire this candidate.
+        # Create dynamic debate prompt
+        persona_descriptions = []
+        for persona_name, prompt in persona_prompts.items():
+            persona_descriptions.append(f"{persona_name.replace('_', ' ').title()}: {prompt}")
+        
+        personas_text = "\n".join(persona_descriptions)
+        
+        system_prompt = f"""You are facilitating a professional debate between {len(persona_prompts)} expert personas evaluating a candidate for a specific job. Each persona should speak in their role and provide their perspective on whether to hire this candidate.
 
-The debate should be structured as follows:
+The personas and their roles are:
 
-Finance Director: {finance_prompt}
-Hiring Manager: {hiring_prompt}
-Tech Lead: {tech_prompt}
+{personas_text}
 
 Each persona should evaluate the candidate from their perspective and then engage in a professional debate about the hiring decision."""
         
-        user_prompt = f"""Please facilitate a debate between the three personas about this candidate:
+        user_prompt = f"""Please facilitate a debate between the {len(persona_prompts)} personas about this candidate:
 
 CANDIDATE CV:
 {candidate.resume_text}{job_info}
