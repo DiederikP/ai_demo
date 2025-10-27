@@ -755,7 +755,8 @@ async def upload_resume(
     skills: str = Form(...),
     education: str = Form(...),
     job_id: str = Form(...),
-    motivational_letter: Optional[str] = Form(None)
+    motivational_letter: Optional[str] = Form(None),
+    motivation_file: Optional[UploadFile] = File(None)
 ):
     """Upload and process resume file"""
     try:
@@ -783,6 +784,18 @@ async def upload_resume(
         # Safely truncate text
         resume_text = truncate_text_safely(resume_text, 3000)
         
+        # Process motivational letter file if provided
+        motivation_text = motivational_letter
+        if motivation_file and motivation_file.filename:
+            try:
+                motivation_content = await motivation_file.read()
+                motivation_text = extract_text_from_file(motivation_content, motivation_file.filename)
+                motivation_text = truncate_text_safely(motivation_text, 1000)  # Shorter limit for motivation letter
+                print(f"Motivation letter extracted: {len(motivation_text)} characters")
+            except Exception as e:
+                print(f"Error processing motivation file: {str(e)}")
+                motivation_text = motivational_letter  # Fallback to text input
+        
         # Parse skills
         skills_list = [skill.strip() for skill in skills.split(",")]
         
@@ -793,7 +806,7 @@ async def upload_resume(
             name=name,
             email=email,
             resume_text=resume_text,
-            motivational_letter=motivational_letter,
+            motivational_letter=motivation_text,
             experience_years=experience_years,
             skills="|".join(skills_list),
             education=education
