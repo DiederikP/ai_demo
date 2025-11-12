@@ -339,6 +339,20 @@ class EvaluationDB(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     candidate = relationship("CandidateDB", back_populates="evaluations")
 
+class EvaluationResultDB(Base):
+    __tablename__ = "evaluation_results"
+    id = Column(String, primary_key=True, default=lambda: str(uuid4()))
+    candidate_id = Column(String, ForeignKey("candidates.id"), nullable=False)
+    job_id = Column(String, ForeignKey("job_postings.id"), nullable=False)
+    result_type = Column(String, nullable=False)  # 'evaluation' or 'debate'
+    result_data = Column(Text, nullable=False)  # JSON string of full result
+    selected_personas = Column(Text)  # JSON array of persona IDs
+    company_note = Column(Text)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    candidate = relationship("CandidateDB")
+    job = relationship("JobPostingDB")
+
 class PersonaDB(Base):
     __tablename__ = "personas"
     id = Column(String, primary_key=True, default=lambda: str(uuid4()))
@@ -2438,6 +2452,96 @@ def debug_candidate(candidate_id: str):
         "first_100_chars": candidate.resume_text[:100] if candidate.resume_text else "EMPTY",
         "looks_like_binary": candidate.resume_text[:10].startswith('%PDF') if candidate.resume_text else False
     }
+
+# -----------------------------
+# Result Storage and Retrieval endpoints
+# -----------------------------
+@app.get("/evaluation-results")
+async def get_evaluation_results(
+    candidate_id: Optional[str] = None,
+    job_id: Optional[str] = None,
+    result_type: Optional[str] = None
+):
+    """Get saved evaluation or debate results"""
+    try:
+        db = SessionLocal()
+        query = db.query(EvaluationResultDB)
+        
+        if candidate_id:
+            query = query.filter(EvaluationResultDB.candidate_id == candidate_id)
+        if job_id:
+            query = query.filter(EvaluationResultDB.job_id == job_id)
+        if result_type:
+            query = query.filter(EvaluationResultDB.result_type == result_type)
+        
+        results = query.order_by(EvaluationResultDB.created_at.desc()).all()
+        
+        import json
+        result_list = []
+        for result in results:
+            try:
+                result_data = json.loads(result.result_data)
+                persona_ids = json.loads(result.selected_personas) if result.selected_personas else []
+                
+                result_list.append({
+                    "id": result.id,
+                    "candidate_id": result.candidate_id,
+                    "job_id": result.job_id,
+                    "result_type": result.result_type,
+                    "selected_personas": persona_ids,
+                    "company_note": result.company_note,
+                    "created_at": result.created_at.isoformat() if result.created_at else None,
+                    "updated_at": result.updated_at.isoformat() if result.updated_at else None,
+                    "result_data": result_data
+                })
+            except Exception as e:
+                print(f"Error parsing result {result.id}: {str(e)}")
+                continue
+        
+        db.close()
+        
+        return {
+            "success": True,
+            "results": result_list
+        }
+    except Exception as e:
+        print(f"Error getting evaluation results: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get evaluation results: {str(e)}")
+
+@app.get("/evaluation-results/{result_id}")
+async def get_evaluation_result(result_id: str):
+    """Get a specific evaluation or debate result by ID"""
+    try:
+        db = SessionLocal()
+        result = db.query(EvaluationResultDB).filter(EvaluationResultDB.id == result_id).first()
+        
+        if not result:
+            db.close()
+            raise HTTPException(status_code=404, detail="Result not found")
+        
+        import json
+        result_data = json.loads(result.result_data)
+        persona_ids = json.loads(result.selected_personas) if result.selected_personas else []
+        
+        db.close()
+        
+        return {
+            "success": True,
+            "id": result.id,
+            "candidate_id": result.candidate_id,
+            "job_id": result.job_id,
+            "result_type": result.result_type,
+            "selected_personas": persona_ids,
+            "company_note": result.company_note,
+            "created_at": result.created_at.isoformat() if result.created_at else None,
+            "updated_at": result.updated_at.isoformat() if result.updated_at else None,
+            "result_data": result_data
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting evaluation result: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get evaluation result: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
