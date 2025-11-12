@@ -4,5 +4,7 @@ openai==2.5.0
 python-dotenv==1.1.1
 pydantic==2.12.3
 PyPDF2==3.0.1
+PyMuPDF==1.23.0
 sqlalchemy==2.0.23
 python-multipart==0.0.6
+httpx==0.28.1
