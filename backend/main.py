@@ -1846,13 +1846,16 @@ BELANGRIJK:
         }
 
 @app.get("/candidates")
-async def get_candidates():
+async def get_candidates(job_id: Optional[str] = None):
     """Get all evaluated candidates with their evaluations"""
     try:
         db = SessionLocal()
         
         # Get candidates with their evaluations and job info
-        candidates = db.query(CandidateDB).all()
+        query = db.query(CandidateDB)
+        if job_id:
+            query = query.filter(CandidateDB.job_id == job_id)
+        candidates = query.all()
         
         result = []
         for candidate in candidates:
