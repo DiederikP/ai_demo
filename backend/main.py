@@ -1,10 +1,12 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional, Dict
 from uuid import uuid4
 import openai
 import os
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from azure.ai.formrecognizer import DocumentAnalysisClient
 from azure.core.credentials import AzureKeyCredential
 import io
@@ -69,9 +71,20 @@ load_dotenv()
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
 app = FastAPI(title="Barnes AI Hiring Assistant", version="4.0.0")
+
+# CORS configuration - environment-aware
+cors_origins_env = os.getenv("CORS_ORIGINS", "")
+if cors_origins_env:
+    # If CORS_ORIGINS is set, use it (comma-separated list)
+    allowed_origins = [origin.strip() for origin in cors_origins_env.split(",")]
+else:
+    # Default: allow all origins (for development)
+    # In production, set CORS_ORIGINS to your frontend URL
+    allowed_origins = ["*"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -237,6 +250,11 @@ def truncate_text_safely(text: str, max_length: int = 3000) -> str:
         return text
     return text[:max_length] + "\n\n[Content truncated for processing...]"
 
+async def call_openai_safe_async(messages: List[Dict], max_tokens: int = 1000, temperature: float = 0.1, model: str = None) -> Dict:
+    """Async wrapper for call_openai_safe to enable parallel execution"""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, call_openai_safe, messages, max_tokens, temperature, model)
+
 def call_openai_safe(messages: List[Dict], max_tokens: int = 1000, temperature: float = 0.1, model: str = None) -> Dict:
     """Safely call OpenAI API with token management and error handling"""
     try:
@@ -294,8 +312,15 @@ def call_openai_safe(messages: List[Dict], max_tokens: int = 1000, temperature: 
 # -----------------------------
 # Database setup
 # -----------------------------
-DATABASE_URL = "sqlite:///./ai_hiring.db"
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+# Support both SQLite (local/dev) and PostgreSQL (production)
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./ai_hiring.db")
+
+# Configure engine based on database type
+if DATABASE_URL.startswith("sqlite"):
+    engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+else:
+    # PostgreSQL or other databases
+    engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_recycle=300)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 Base = declarative_base()
 
@@ -1543,10 +1568,9 @@ Deze bedrijfsnotitie bevat belangrijke informatie over de kandidaat van het bemi
 LET OP: Als Bureaurecruiter of HR/Inhouse Recruiter moet je deze informatie actief gebruiken. Als er salarisinformatie in staat, gebruik deze in je evaluatie. Als er tegenstrijdigheden zijn tussen CV en bedrijfsnotitie, vertrouw de bedrijfsnotitie.
 {company_note_text}"""
         
-        # Evaluate for each selected persona
-        persona_evaluations = {}
-        
-        for persona in persona_objects:
+        # Evaluate for each selected persona - PARALLELIZED for performance
+        async def evaluate_single_persona(persona):
+            """Evaluate a single persona - designed to run in parallel"""
             persona_prompt = persona_prompts.get(persona.name, persona.system_prompt)
             
             # Build system prompt for this persona - they evaluate from their own perspective
@@ -1588,20 +1612,18 @@ Geef een score (1-10), sterke punten, aandachtspunten, analyse en advies. Benoem
             if len(user_prompt) > 3000:
                 user_prompt = user_prompt[:3000] + "\n\n[Prompt truncated for token limits...]"
             
-            # Call OpenAI safely for this persona
-            # Use local variables to avoid scoping issues
-            openai_result = call_openai_safe([
+            # Call OpenAI safely for this persona - ASYNC VERSION
+            openai_result = await call_openai_safe_async([
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ], max_tokens=_max_tokens_eval, temperature=_temp_eval, model=_model_eval)
             
             if not openai_result["success"]:
                 print(f"AI evaluation failed for persona {persona.name}: {openai_result['error']}")
-                persona_evaluations[persona.name] = {
+                return persona.name, {
                     "error": f"Evaluation failed: {openai_result['error']}",
                     "persona_display_name": persona.display_name
                 }
-                continue
             
             response = openai_result["result"].choices[0].message.content
             
@@ -1667,7 +1689,7 @@ Geef een score (1-10), sterke punten, aandachtspunten, analyse en advies. Benoem
                     print(f"WARNING: Persona {persona.name} provided recommendation '{ai_recommendation}' for score {score}, but should be '{correct_recommendation}'. Using score-based recommendation.")
                 
                 # Store evaluation for this persona
-                persona_evaluations[persona.name] = {
+                return persona.name, {
                     "score": score,
                     "strengths": evaluation.get("strengths", "Niet beschikbaar"),
                     "weaknesses": evaluation.get("weaknesses", "Niet beschikbaar"),
@@ -1683,7 +1705,7 @@ Geef een score (1-10), sterke punten, aandachtspunten, analyse en advies. Benoem
                 print(f"JSON parsing error for persona {persona.name}: {str(e)}")
                 print(f"Response (first 500 chars): {response[:500]}")
                 # Fallback structured response
-                persona_evaluations[persona.name] = {
+                return persona.name, {
                     "score": SCORE_DEFAULT,
                     "strengths": "Niet beschikbaar - parsing error",
                     "weaknesses": "Niet beschikbaar - parsing error",
@@ -1695,7 +1717,7 @@ Geef een score (1-10), sterke punten, aandachtspunten, analyse en advies. Benoem
                 
             except Exception as e:
                 print(f"Unexpected error parsing evaluation for persona {persona.name}: {str(e)}")
-                persona_evaluations[persona.name] = {
+                return persona.name, {
                     "score": SCORE_DEFAULT,
                     "strengths": "Niet beschikbaar",
                     "weaknesses": "Niet beschikbaar",
@@ -1705,11 +1727,22 @@ Geef een score (1-10), sterke punten, aandachtspunten, analyse en advies. Benoem
                     "persona_name": persona.name
                 }
         
+        # Run all persona evaluations in parallel
+        print(f"Running {len(persona_objects)} persona evaluations in parallel...")
+        evaluation_tasks = [evaluate_single_persona(persona) for persona in persona_objects]
+        evaluation_results = await asyncio.gather(*evaluation_tasks)
+        
+        # Convert results to dictionary
+        persona_evaluations = {}
+        for persona_name, evaluation_data in evaluation_results:
+            persona_evaluations[persona_name] = evaluation_data
+        
         db.close()
         
         # Generate combined analysis if we have multiple evaluations
         combined_analysis = None
         combined_recommendation = None
+        combined_score = None  # Initialize combined_score
         
         if len(persona_evaluations) > 1:
             try:
@@ -1843,6 +1876,79 @@ BELANGRIJK:
                 combined_score = min(max(avg_score, SCORE_MIN), SCORE_MAX)  # Clamp to configured range
                 combined_analysis = f"Gemiddelde score van {len(persona_evaluations)} perspectieven: {avg_score:.1f}/{SCORE_MAX}"
                 combined_recommendation = get_recommendation_from_score(avg_score)
+        else:
+            # Single persona evaluation - calculate score directly
+            if len(persona_evaluations) == 1:
+                eval_data = list(persona_evaluations.values())[0]
+                if 'error' not in eval_data:
+                    combined_score = float(eval_data.get('score', SCORE_DEFAULT))
+                    combined_score = min(max(combined_score, SCORE_MIN), SCORE_MAX)
+                    combined_analysis = eval_data.get('analysis', 'Evaluatie beschikbaar')
+                    combined_recommendation = eval_data.get('recommendation', get_recommendation_from_score(combined_score))
+                else:
+                    combined_score = SCORE_DEFAULT
+                    combined_analysis = "Evaluatie beschikbaar"
+                    combined_recommendation = get_recommendation_from_score(SCORE_DEFAULT)
+            else:
+                # No evaluations - fallback
+                combined_score = SCORE_DEFAULT
+                combined_analysis = "Geen evaluaties beschikbaar"
+                combined_recommendation = get_recommendation_from_score(SCORE_DEFAULT)
+        
+        # Ensure combined_score is always defined
+        if combined_score is None:
+            scores = [float(e.get('score', SCORE_DEFAULT)) for e in persona_evaluations.values() if 'error' not in e and e.get('score')]
+            validated_scores = [min(max(s, SCORE_MIN), SCORE_MAX) for s in scores]
+            combined_score = sum(validated_scores) / len(validated_scores) if validated_scores else SCORE_DEFAULT
+            combined_score = min(max(combined_score, SCORE_MIN), SCORE_MAX)
+        
+        # Prepare result data
+        result_data = {
+            "evaluations": persona_evaluations,
+            "persona_count": len(persona_evaluations),
+            "combined_analysis": combined_analysis,
+            "combined_recommendation": combined_recommendation,
+            "combined_score": combined_score
+        }
+        
+        # Save result to database
+        try:
+            import json
+            result_json = json.dumps(result_data)
+            # Sort persona IDs for consistent comparison
+            persona_ids_json = json.dumps(sorted(list(persona_prompts.keys())))
+            
+            # Check if result already exists (for caching)
+            existing_result = db.query(EvaluationResultDB).filter(
+                EvaluationResultDB.candidate_id == candidate_id,
+                EvaluationResultDB.job_id == candidate.job_id,
+                EvaluationResultDB.result_type == 'evaluation',
+                EvaluationResultDB.selected_personas == persona_ids_json
+            ).first()
+            
+            if existing_result:
+                # Update existing result
+                existing_result.result_data = result_json
+                existing_result.company_note = company_note
+                existing_result.updated_at = func.now()
+            else:
+                # Create new result
+                evaluation_result = EvaluationResultDB(
+                    candidate_id=candidate_id,
+                    job_id=candidate.job_id,
+                    result_type='evaluation',
+                    result_data=result_json,
+                    selected_personas=persona_ids_json,
+                    company_note=company_note
+                )
+                db.add(evaluation_result)
+            
+            db.commit()
+        except Exception as e:
+            print(f"Error saving evaluation result: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            # Continue even if saving fails
         
         # Return evaluations from all personas with combined analysis
         return {
@@ -1850,7 +1956,8 @@ BELANGRIJK:
             "evaluations": persona_evaluations,  # Dictionary of persona_name -> evaluation
             "persona_count": len(persona_evaluations),
             "combined_analysis": combined_analysis,
-            "combined_recommendation": combined_recommendation
+            "combined_recommendation": combined_recommendation,
+            "combined_score": combined_score
         }
         
     except Exception as e:
@@ -2061,6 +2168,52 @@ Each persona should provide their evaluation and then engage in a professional d
             
             response = openai_result["result"].choices[0].message.content
             full_prompt_text = f"SYSTEM PROMPT:\n{system_prompt}\n\nUSER PROMPT:\n{user_prompt}"
+        
+        # Prepare result data
+        result_data = {
+            "debate": response,
+            "full_prompt": full_prompt_text,
+            "tokens_used": 0  # LangChain doesn't return token count in same format
+        }
+        
+        # Save debate result to database
+        try:
+            import json
+            result_json = json.dumps(result_data)
+            # Sort persona IDs for consistent comparison
+            persona_ids_json = json.dumps(sorted(list(persona_prompts.keys())))
+            
+            # Check if result already exists (for caching)
+            existing_result = db.query(EvaluationResultDB).filter(
+                EvaluationResultDB.candidate_id == candidate_id,
+                EvaluationResultDB.job_id == candidate.job_id,
+                EvaluationResultDB.result_type == 'debate',
+                EvaluationResultDB.selected_personas == persona_ids_json
+            ).first()
+            
+            if existing_result:
+                # Update existing result
+                existing_result.result_data = result_json
+                existing_result.company_note = company_note
+                existing_result.updated_at = func.now()
+            else:
+                # Create new result
+                debate_result = EvaluationResultDB(
+                    candidate_id=candidate_id,
+                    job_id=candidate.job_id,
+                    result_type='debate',
+                    result_data=result_json,
+                    selected_personas=persona_ids_json,
+                    company_note=company_note
+                )
+                db.add(debate_result)
+            
+            db.commit()
+        except Exception as e:
+            print(f"Error saving debate result: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            # Continue even if saving fails
         
         db.close()
         
@@ -2542,6 +2695,80 @@ async def get_evaluation_result(result_id: str):
     except Exception as e:
         print(f"Error getting evaluation result: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to get evaluation result: {str(e)}")
+
+@app.delete("/candidates/{candidate_id}")
+async def delete_candidate(candidate_id: str):
+    """Delete a candidate and all associated data"""
+    try:
+        db = SessionLocal()
+        candidate = db.query(CandidateDB).filter(CandidateDB.id == candidate_id).first()
+        
+        if not candidate:
+            db.close()
+            raise HTTPException(status_code=404, detail="Candidate not found")
+        
+        # Delete associated evaluations
+        evaluations = db.query(EvaluationDB).filter(EvaluationDB.candidate_id == candidate_id).all()
+        for eval in evaluations:
+            db.delete(eval)
+        
+        # Delete associated evaluation results
+        results = db.query(EvaluationResultDB).filter(EvaluationResultDB.candidate_id == candidate_id).all()
+        for result in results:
+            db.delete(result)
+        
+        # Delete the candidate
+        db.delete(candidate)
+        db.commit()
+        db.close()
+        
+        return {"success": True, "message": "Candidate deleted successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting candidate: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete candidate: {str(e)}")
+
+@app.put("/candidates/{candidate_id}/assign-jobs")
+async def assign_jobs_to_candidate(
+    candidate_id: str,
+    job_ids: List[str] = Form(...)
+):
+    """Assign multiple jobs to a candidate"""
+    try:
+        db = SessionLocal()
+        candidate = db.query(CandidateDB).filter(CandidateDB.id == candidate_id).first()
+        
+        if not candidate:
+            db.close()
+            raise HTTPException(status_code=404, detail="Candidate not found")
+        
+        # For now, we'll update the primary job_id to the first job
+        # In a full implementation, you'd want a many-to-many relationship
+        if job_ids:
+            # Verify all jobs exist
+            for job_id in job_ids:
+                job = db.query(JobPostingDB).filter(JobPostingDB.id == job_id).first()
+                if not job:
+                    db.close()
+                    raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+            
+            # Set primary job to first one
+            candidate.job_id = job_ids[0]
+            db.commit()
+        
+        db.close()
+        return {
+            "success": True,
+            "message": f"Assigned {len(job_ids)} job(s) to candidate",
+            "primary_job_id": job_ids[0] if job_ids else None,
+            "all_job_ids": job_ids
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error assigning jobs: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to assign jobs: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn

@@ -1,0 +1,29 @@
+services:
+  - type: web
+    name: ai-hiring-backend
+    env: python
+    buildCommand: cd backend && pip install -r requirements.txt
+    startCommand: cd backend && uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: AZURE_DOC_INTEL_ENDPOINT
+        sync: false
+      - key: AZURE_DOC_INTEL_KEY
+        sync: false
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ai-hiring-db
+          property: connectionString
+      - key: ENVIRONMENT
+        value: production
+      - key: PORT
+        value: 8000
+    healthCheckPath: /docs
+
+databases:
+  - name: ai-hiring-db
+    databaseName: ai_hiring
+    user: ai_hiring_user
+    plan: starter
+

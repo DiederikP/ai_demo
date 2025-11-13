@@ -2,6 +2,15 @@
 
 AI-powered candidate evaluation platform with job-specific assessments and expert debates.
 
+## 🚀 Ready for Production Deployment
+
+This application is configured for deployment with separate test and production environments.
+
+**Quick Start:**
+- See [QUICK_START_DEPLOYMENT.md](./QUICK_START_DEPLOYMENT.md) for a 5-minute deployment guide
+- See [PRODUCTION_DEPLOYMENT.md](./PRODUCTION_DEPLOYMENT.md) for detailed instructions
+- See [DEPLOYMENT_CHECKLIST.md](./DEPLOYMENT_CHECKLIST.md) for a step-by-step checklist
+
 ## Version 0.1 - Stable Release
 
 ### Features:

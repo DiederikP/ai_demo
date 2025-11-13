@@ -8,6 +8,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from typing import Dict, List, Optional
 import os
 import json
+import asyncio
 
 # Import config
 try:
@@ -402,8 +403,8 @@ async def run_multi_agent_debate(
     # Initialize conversation messages list
     conversation: List[Dict[str, str]] = []
     
-    # Extended conversation flow: structured turns
-    # Target: ~20-25 messages total
+    # OPTIMIZED conversation flow: Reduced rounds for better performance
+    # Target: ~12-15 messages total (reduced from 20-25)
     
     print(f"\n=== DEBAT START ===\nPersonas: {', '.join(persona_names)}")
     
@@ -412,9 +413,9 @@ async def run_multi_agent_debate(
     entry = await invoke_orchestrator(persona_names, candidate_info, job_info, conversation, company_note)
     conversation.append({"role": "Moderator", "content": entry['message']})
     
-    # 2. Each persona gives initial thoughts
-    for persona_name in persona_names:
-        print(f"  → {persona_name} geeft eerste indruk...")
+    # 2. Each persona gives initial thoughts - PARALLELIZED for performance
+    print(f"  → {len(persona_names)} personas geven eerste indruk (parallel)...")
+    async def get_initial_thought(persona_name):
         entry = await invoke_persona(
             persona_name,
             persona_prompts[persona_name],
@@ -423,18 +424,20 @@ async def run_multi_agent_debate(
             conversation.copy(),
             company_note
         )
-        # Format persona name for display
         display_name = persona_name.replace('_', ' ').title()
-        conversation.append({"role": display_name, "content": entry['message']})
+        return {"role": display_name, "content": entry['message']}
+    
+    initial_thoughts = await asyncio.gather(*[get_initial_thought(pn) for pn in persona_names])
+    conversation.extend(initial_thoughts)
     
     # 3. Moderator guides discussion
     print("  → Moderator begeleidt discussie...")
     entry = await invoke_orchestrator(persona_names, candidate_info, job_info, conversation, company_note)
     conversation.append({"role": "Moderator", "content": entry['message']})
     
-    # 4. Personas respond (round 2)
-    for persona_name in persona_names:
-        print(f"  → {persona_name} reageert...")
+    # 4. Personas respond (round 2) - PARALLELIZED for performance
+    print(f"  → {len(persona_names)} personas reageren (parallel)...")
+    async def get_response(persona_name):
         entry = await invoke_persona(
             persona_name,
             persona_prompts[persona_name],
@@ -444,35 +447,19 @@ async def run_multi_agent_debate(
             company_note
         )
         display_name = persona_name.replace('_', ' ').title()
-        conversation.append({"role": display_name, "content": entry['message']})
+        return {"role": display_name, "content": entry['message']}
     
-    # 5. Moderator deepens discussion
-    print("  → Moderator verdiept discussie...")
-    entry = await invoke_orchestrator(persona_names, candidate_info, job_info, conversation, company_note)
-    conversation.append({"role": "Moderator", "content": entry['message']})
+    responses = await asyncio.gather(*[get_response(pn) for pn in persona_names])
+    conversation.extend(responses)
     
-    # 6. Personas continue (round 3)
-    for persona_name in persona_names:
-        print(f"  → {persona_name} gaat verder...")
-        entry = await invoke_persona(
-            persona_name,
-            persona_prompts[persona_name],
-            candidate_info,
-            job_info,
-            conversation.copy(),
-            company_note
-        )
-        display_name = persona_name.replace('_', ' ').title()
-        conversation.append({"role": display_name, "content": entry['message']})
-    
-    # 7. Moderator asks for final thoughts
+    # 5. Moderator asks for final thoughts
     print("  → Moderator vraagt om afronding...")
     entry = await invoke_orchestrator(persona_names, candidate_info, job_info, conversation, company_note)
     conversation.append({"role": "Moderator", "content": entry['message']})
     
-    # 8. Each persona gives final perspective
-    for persona_name in persona_names:
-        print(f"  → {persona_name} geeft laatste perspectief...")
+    # 6. Each persona gives final perspective - PARALLELIZED for performance
+    print(f"  → {len(persona_names)} personas geven laatste perspectief (parallel)...")
+    async def get_final_perspective(persona_name):
         entry = await invoke_persona(
             persona_name,
             persona_prompts[persona_name],
@@ -482,9 +469,12 @@ async def run_multi_agent_debate(
             company_note
         )
         display_name = persona_name.replace('_', ' ').title()
-        conversation.append({"role": display_name, "content": entry['message']})
+        return {"role": display_name, "content": entry['message']}
     
-    # 9. Moderator provides final summary
+    final_perspectives = await asyncio.gather(*[get_final_perspective(pn) for pn in persona_names])
+    conversation.extend(final_perspectives)
+    
+    # 7. Moderator provides final summary
     print("  → Moderator geeft samenvatting...")
     entry = await invoke_orchestrator_summary(persona_names, candidate_info, job_info, conversation, company_note)
     conversation.append({"role": "Moderator", "content": entry['message']})
