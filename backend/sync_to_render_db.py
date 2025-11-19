@@ -161,20 +161,21 @@ def main():
     print(f"\n📊 Found {len(local_tables)} tables in local database")
     print(f"📊 Found {len(render_tables)} tables in Render database")
     
-    # Tables to sync (common tables)
+    # Tables to sync (common tables) - ORDER MATTERS for foreign keys!
+    # Sync in dependency order: base tables first, then tables that reference them
     tables_to_sync = [
-        'personas',
-        'job_postings', 
-        'candidates',
-        'evaluation_results',
-        'candidate_conversations',
-        'evaluation_templates',
-        'comments',
-        'notifications',
-        'users',
-        'companies',
-        'approvals',
-        'job_watchers'
+        'companies',      # Base table, no dependencies
+        'users',          # May reference companies
+        'personas',       # Base table
+        'job_postings',   # Base table
+        'candidates',     # References job_postings
+        'evaluation_results',  # References candidates, job_postings
+        'candidate_conversations',  # References candidates, job_postings
+        'evaluation_templates',  # May reference jobs/personas
+        'notifications',  # References users, candidates, jobs, results
+        'approvals',      # References users, candidates, jobs, results
+        'comments',       # May have dependencies
+        'job_watchers'    # References jobs
     ]
     
     # Filter to only tables that exist in both databases
