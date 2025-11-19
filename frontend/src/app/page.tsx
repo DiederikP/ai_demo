@@ -156,18 +156,19 @@ export default function Home() {
   };
 
   useEffect(() => {
-    // Wrap in try-catch to prevent crashes
-    try {
-      // Wake up backend first (fire and forget)
-      wakeUpBackend();
-      
-      // Then load data
-      loadPersonas();
-      loadJobDescriptions();
-      loadConfig();
-    } catch (error: any) {
-      console.error('Error in useEffect:', error);
-    }
+    // Wake up backend first (fire and forget)
+    wakeUpBackend();
+    
+    // Load data - wrap each in error handling to prevent unhandled rejections
+    loadPersonas().catch((error) => {
+      console.error('Unhandled error in loadPersonas:', error);
+    });
+    loadJobDescriptions().catch((error) => {
+      console.error('Unhandled error in loadJobDescriptions:', error);
+    });
+    loadConfig().catch((error) => {
+      console.error('Unhandled error in loadConfig:', error);
+    });
   }, []);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {

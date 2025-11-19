@@ -91,8 +91,10 @@ export default function CompanyDashboard() {
   useEffect(() => {
     // Wake up backend first (fire and forget)
     wakeUpBackend();
-    // Then load data
-    loadData();
+    // Then load data - wrap in error handling to prevent unhandled rejections
+    loadData().catch((error) => {
+      console.error('Unhandled error in loadData:', error);
+    });
   }, []);
 
   useEffect(() => {
