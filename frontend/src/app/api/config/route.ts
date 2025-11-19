@@ -1,8 +1,23 @@
 import { NextResponse } from 'next/server';
 
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+
 export async function GET() {
   try {
-    const response = await fetch('http://localhost:8000/config');
+    // First, try to wake up the backend by calling health endpoint
+    try {
+      await fetch(`${BACKEND_URL}/health`, {
+        method: 'GET',
+        signal: AbortSignal.timeout(2000), // 2 second timeout
+      }).catch(() => {
+        // Ignore errors - backend might be sleeping
+      });
+    } catch {
+      // Ignore wake-up errors
+    }
+
+    // Then fetch the config
+    const response = await fetch(`${BACKEND_URL}/config`);
     
     if (!response.ok) {
       return NextResponse.json(
