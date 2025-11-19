@@ -13,8 +13,7 @@ Or run with:
 
 import os
 import sys
-from sqlalchemy import create_engine, inspect
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import create_engine, inspect, MetaData, Table, text
 import sqlite3
 from datetime import datetime
 
@@ -45,7 +44,7 @@ def get_table_names(engine):
     inspector = inspect(engine)
     return inspector.get_table_names()
 
-def sync_table_data(local_conn, render_session, table_name):
+def sync_table_data(local_conn, render_engine, table_name):
     """Sync data from SQLite to PostgreSQL for a specific table"""
     print(f"\n📦 Syncing table: {table_name}")
     
@@ -60,52 +59,62 @@ def sync_table_data(local_conn, render_session, table_name):
     
     # Get column names
     cursor.execute(f"PRAGMA table_info({table_name})")
-    columns = [col[1] for col in cursor.fetchall()]
+    sqlite_columns = [col[1] for col in cursor.fetchall()]
     
     print(f"   Found {len(rows)} rows in local database")
     
-    # Clear existing data in Render database (optional - comment out if you want to keep existing data)
+    # Reflect table schema from Render database
+    metadata = MetaData()
     try:
-        render_session.execute(f"TRUNCATE TABLE {table_name} CASCADE")
-        render_session.commit()
-        print(f"   🗑️  Cleared existing data in Render database")
+        table = Table(table_name, metadata, autoload_with=render_engine)
+    except Exception as e:
+        print(f"   ⚠️  Could not reflect table {table_name}: {e}")
+        return 0
+
+    inspector = inspect(render_engine)
+    render_columns = [col["name"] for col in inspector.get_columns(table_name)]
+
+    # Determine columns to sync (intersection of local and render columns)
+    columns_to_sync = [col for col in sqlite_columns if col in render_columns]
+    if not columns_to_sync:
+        print(f"   ⚠️  No common columns found to sync")
+        return 0
+
+    # Clear existing data in Render database
+    try:
+        dialect = render_engine.dialect.name
+        with render_engine.begin() as connection:
+            if dialect == "sqlite":
+                connection.execute(text(f'DELETE FROM "{table_name}"'))
+            else:
+                connection.execute(text(f'TRUNCATE TABLE "{table_name}" RESTART IDENTITY CASCADE'))
+        print("   🗑️  Cleared existing data in Render database")
     except Exception as e:
         print(f"   ⚠️  Could not clear existing data: {e}")
-        render_session.rollback()
     
     # Insert data
     inserted = 0
-    for row in rows:
-        try:
-            # Build insert statement
-            values = dict(zip(columns, row))
-            
-            # Handle None values and convert types
-            placeholders = ', '.join([f":{col}" for col in columns])
-            columns_str = ', '.join(columns)
-            
-            # Convert row to dict with proper handling
-            row_dict = {}
-            for i, col in enumerate(columns):
-                val = row[i]
-                # Handle datetime strings
-                if isinstance(val, str) and 'T' in val:
-                    try:
-                        val = datetime.fromisoformat(val.replace('Z', '+00:00'))
-                    except:
-                        pass
-                row_dict[col] = val
-            
-            # Insert using raw SQL
-            insert_sql = f"INSERT INTO {table_name} ({columns_str}) VALUES ({placeholders})"
-            render_session.execute(insert_sql, row_dict)
-            inserted += 1
-        except Exception as e:
-            print(f"   ⚠️  Error inserting row: {e}")
-            render_session.rollback()
-            continue
-    
-    render_session.commit()
+    with render_engine.begin() as connection:
+        for row in rows:
+            try:
+                row_dict = {}
+                for i, col in enumerate(sqlite_columns):
+                    if col not in columns_to_sync:
+                        continue
+                    val = row[i]
+                    if isinstance(val, str) and "T" in val:
+                        try:
+                            val = datetime.fromisoformat(val.replace("Z", "+00:00"))
+                        except Exception:
+                            pass
+                    row_dict[col] = val
+
+                connection.execute(table.insert().values(**row_dict))
+                inserted += 1
+            except Exception as e:
+                print(f"   ⚠️  Error inserting row: {e}")
+                continue
+
     print(f"   ✅ Inserted {inserted}/{len(rows)} rows successfully")
     return inserted
 
@@ -185,23 +194,17 @@ def main():
         print("❌ Cancelled")
         sys.exit(0)
     
-    # Create session for Render
-    RenderSession = sessionmaker(bind=render_engine)
-    render_session = RenderSession()
-    
     # Sync each table
     total_synced = 0
     for table in tables_to_sync:
         try:
-            count = sync_table_data(local_conn, render_session, table)
+            count = sync_table_data(local_conn, render_engine, table)
             total_synced += count
         except Exception as e:
             print(f"❌ Error syncing {table}: {e}")
-            render_session.rollback()
     
     # Close connections
     local_conn.close()
-    render_session.close()
     
     print("\n" + "=" * 60)
     print(f"✅ Sync complete! Synced {total_synced} total rows")
