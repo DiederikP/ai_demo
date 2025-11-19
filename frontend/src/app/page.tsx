@@ -139,9 +139,36 @@ export default function Home() {
     }
   };
 
+  // Wake up backend on initial load to prevent cold start delays
+  const wakeUpBackend = () => {
+    // Fire and forget - don't wait for response
+    const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+    // Create a timeout to abort after 3 seconds
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 3000);
+    
+    fetch(`${backendUrl}/health`, {
+      method: 'GET',
+      signal: controller.signal,
+    })
+      .then(() => {
+        clearTimeout(timeoutId);
+        console.log('Backend is awake');
+      })
+      .catch(() => {
+        clearTimeout(timeoutId);
+        // Ignore errors - backend might be sleeping and will wake up
+        console.log('Backend wake-up initiated (may be sleeping)');
+      });
+  };
+
   useEffect(() => {
     // Wrap in try-catch to prevent crashes
     try {
+      // Wake up backend first (fire and forget)
+      wakeUpBackend();
+      
+      // Then load data
       loadPersonas();
       loadJobDescriptions();
       loadConfig();
