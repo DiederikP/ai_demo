@@ -7,19 +7,33 @@ import openai
 import os
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from azure.ai.formrecognizer import DocumentAnalysisClient
-from azure.core.credentials import AzureKeyCredential
+try:
+    from azure.ai.formrecognizer import DocumentAnalysisClient
+    from azure.core.credentials import AzureKeyCredential
+    AZURE_AVAILABLE = True
+except ImportError:
+    AZURE_AVAILABLE = False
+    DocumentAnalysisClient = None
+    AzureKeyCredential = None
+    print("Warning: Azure Document Intelligence not available. PDF parsing will be limited.")
 import io
+import re
 from io import BytesIO
+from docx import Document
 from dotenv import load_dotenv
 import traceback
 import sys
-from sqlalchemy import create_engine, Column, String, Integer, Text, ForeignKey, Enum, DateTime, Boolean
+from sqlalchemy import create_engine, Column, String, Integer, Text, ForeignKey, Enum, DateTime, Boolean, or_, UniqueConstraint, text
 from sqlalchemy.orm import sessionmaker, declarative_base, relationship
 from sqlalchemy.sql import func
 import enum
 import base64
-import fitz  # PyMuPDF
+try:
+    import fitz  # PyMuPDF
+    FITZ_AVAILABLE = True
+except ImportError:
+    FITZ_AVAILABLE = False
+    print("Warning: PyMuPDF (fitz) not available. PDF parsing will be limited.")
 
 # Import centralized configuration
 # Use direct import - this is the most reliable approach
@@ -127,6 +141,16 @@ def extract_text_from_file(file_content: bytes, filename: str) -> Dict[str, any]
             # If all methods failed
             raise ValueError("All extraction methods failed")
         
+        # Handle Word documents
+        if filename.lower().endswith(('.docx', '.doc')):
+            try:
+                text = extract_text_from_docx(file_content)
+                if text.strip():
+                    print(f"DOCX extraction successful: {len(text)} characters")
+                    return {"text": text.strip(), "extraction_method": "python-docx", "azure_used": False}
+            except Exception as e:
+                print(f"DOCX extraction failed: {str(e)}")
+        
         # For plain text files (.txt, etc.)
         try:
             text = file_content.decode('utf-8')
@@ -153,6 +177,8 @@ def extract_text_from_pdf_pymupdf(pdf_content: bytes) -> str:
     """Extract text from PDF using PyMuPDF (fitz)"""
     try:
         # Open PDF from bytes
+        if not FITZ_AVAILABLE:
+            raise ImportError("PyMuPDF not available")
         pdf_document = fitz.open(stream=pdf_content, filetype="pdf")
         text = ""
         
@@ -207,6 +233,17 @@ def extract_text_from_pdf_azure(pdf_content: bytes) -> str:
         # Fall back to AI extraction
         base64_content = base64.b64encode(pdf_content).decode('utf-8')
         return extract_text_with_ai(base64_content, "document.pdf")
+
+def extract_text_from_docx(doc_content: bytes) -> str:
+    """Extract text from Word documents using python-docx"""
+    try:
+        document = Document(BytesIO(doc_content))
+        text = "\n".join(paragraph.text for paragraph in document.paragraphs)
+        if not text.strip():
+            raise ValueError("No text extracted from DOCX")
+        return text
+    except Exception as e:
+        raise ValueError(f"DOCX extraction error: {str(e)}")
 
 def extract_text_with_ai(base64_content: str, filename: str) -> str:
     """Use AI to extract text from file content (fallback for non-PDF files)"""
@@ -338,12 +375,15 @@ class JobPostingDB(Base):
     requirements = Column(Text)
     location = Column(String)
     salary_range = Column(String)
+    ai_analysis = Column(Text, nullable=True)  # Store AI analysis results
+    created_at = Column(DateTime(timezone=True), nullable=True)  # Made nullable for SQLite compatibility
+    timeline_stage = Column(String, nullable=True)  # Manual timeline stage override: 'waiting', 'inProgress', 'afterFirst', 'multiRound', 'completed'
     candidates = relationship("CandidateDB", back_populates="job")
 
 class CandidateDB(Base):
     __tablename__ = "candidates"
     id = Column(String, primary_key=True, default=lambda: str(uuid4()))
-    job_id = Column(String, ForeignKey("job_postings.id"))
+    job_id = Column(String, ForeignKey("job_postings.id"), nullable=True)  # Made nullable - candidates can exist without a job
     name = Column(String, nullable=False)
     email = Column(String)
     resume_text = Column(Text, nullable=False)
@@ -351,14 +391,32 @@ class CandidateDB(Base):
     experience_years = Column(Integer)
     skills = Column(Text)
     education = Column(String)
+    preferential_job_ids = Column(Text)  # Comma-separated list of job IDs for preferential vacatures
+    company_note = Column(Text)  # Note from the supplying company about the candidate
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     job = relationship("JobPostingDB", back_populates="candidates")
     evaluations = relationship("EvaluationDB", back_populates="candidate")
+
+class CandidateConversationDB(Base):
+    __tablename__ = "candidate_conversations"
+    id = Column(String, primary_key=True, default=lambda: str(uuid4()))
+    candidate_id = Column(String, ForeignKey("candidates.id"), nullable=False)
+    job_id = Column(String, ForeignKey("job_postings.id"), nullable=True)
+    title = Column(String, nullable=False)
+    summary = Column(Text, nullable=False)
+    pros = Column(Text, nullable=True)
+    cons = Column(Text, nullable=True)
+    persona_guidance = Column(Text, nullable=True)  # JSON structure with persona-specific adjustments
+    created_by = Column(String, nullable=True)
+    conversation_channel = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 class EvaluationDB(Base):
     __tablename__ = "evaluations"
     id = Column(String, primary_key=True, default=lambda: str(uuid4()))
     candidate_id = Column(String, ForeignKey("candidates.id"))
+    job_id = Column(String, ForeignKey("job_postings.id"), nullable=True)
     persona = Column(Enum(PersonaEnum))
     result_summary = Column(Text)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -388,18 +446,252 @@ class PersonaDB(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
-class EvaluationHandlerDB(Base):
-    __tablename__ = "evaluation_handlers"
+class EvaluationTemplateDB(Base):
+    __tablename__ = "evaluation_templates"
     id = Column(String, primary_key=True, default=lambda: str(uuid4()))
-    name = Column(String, nullable=False, unique=True)
-    display_name = Column(String, nullable=False)
-    guidelines = Column(Text, nullable=False)  # Guidelines for how to handle evaluation
-    is_active = Column(Boolean, default=True)
-    is_default = Column(Boolean, default=False)  # Default handler for evaluations
+    name = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    job_id = Column(String, ForeignKey("job_postings.id"), nullable=True)
+    selected_persona_ids = Column(Text, nullable=False)  # Comma-separated list of persona IDs
+    selected_actions = Column(Text, nullable=False)  # Comma-separated list: 'evaluate', 'debate', 'compare'
+    company_note = Column(Text, nullable=True)
+    use_candidate_company_note = Column(Boolean, default=False)
+    created_by = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
+class EvaluationHandlerDB(Base):
+    __tablename__ = "evaluation_handlers"
+    id = Column(String, primary_key=True, default=lambda: str(uuid4()))
+    name = Column(String, nullable=False)
+    display_name = Column(String, nullable=False)
+    guidelines = Column(Text, nullable=False)
+    is_default = Column(Boolean, default=False)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+class CompanyDB(Base):
+    __tablename__ = "companies"
+    id = Column(String, primary_key=True, default=lambda: str(uuid4()))
+    name = Column(String, nullable=False)
+    slug = Column(String, unique=True, nullable=False)
+    primary_domain = Column(String, unique=True, nullable=True)
+    status = Column(String, default="active")  # active, trial, suspended
+    plan = Column(String, default="trial")  # trial, pro, enterprise
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+class UserDB(Base):
+    __tablename__ = "users"
+    id = Column(String, primary_key=True, default=lambda: str(uuid4()))
+    email = Column(String, unique=True, nullable=False)
+    name = Column(String, nullable=False)
+    role = Column(String, default="user")  # admin, recruiter, viewer
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    company_id = Column(String, ForeignKey("companies.id"), nullable=True)
+    company = relationship("CompanyDB")
+
+class NotificationDB(Base):
+    __tablename__ = "notifications"
+    id = Column(String, primary_key=True, default=lambda: str(uuid4()))
+    user_id = Column(String, ForeignKey("users.id"), nullable=False)
+    type = Column(String, nullable=False)  # candidate_update, evaluation_complete, conversation_added, job_created, etc.
+    title = Column(String, nullable=False)
+    message = Column(Text)
+    related_candidate_id = Column(String, ForeignKey("candidates.id"), nullable=True)
+    related_job_id = Column(String, ForeignKey("job_postings.id"), nullable=True)
+    related_result_id = Column(String, ForeignKey("evaluation_results.id"), nullable=True)
+    is_read = Column(Boolean, default=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+class CommentDB(Base):
+    __tablename__ = "comments"
+    id = Column(String, primary_key=True, default=lambda: str(uuid4()))
+    user_id = Column(String, ForeignKey("users.id"), nullable=False)
+    candidate_id = Column(String, ForeignKey("candidates.id"), nullable=True)
+    job_id = Column(String, ForeignKey("job_postings.id"), nullable=True)
+    result_id = Column(String, ForeignKey("evaluation_results.id"), nullable=True)
+    content = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+class JobWatcherDB(Base):
+    __tablename__ = "job_watchers"
+    id = Column(String, primary_key=True, default=lambda: str(uuid4()))
+    job_id = Column(String, ForeignKey("job_postings.id"), nullable=False)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    __table_args__ = (UniqueConstraint('job_id', 'user_id', name='unique_job_watcher'),)
+
+class CandidateWatcherDB(Base):
+    __tablename__ = "candidate_watchers"
+    id = Column(String, primary_key=True, default=lambda: str(uuid4()))
+    candidate_id = Column(String, ForeignKey("candidates.id"), nullable=False)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    __table_args__ = (UniqueConstraint('candidate_id', 'user_id', name='unique_candidate_watcher'),)
+
+class ApprovalDB(Base):
+    __tablename__ = "approvals"
+    id = Column(String, primary_key=True, default=lambda: str(uuid4()))
+    user_id = Column(String, ForeignKey("users.id"), nullable=False)
+    candidate_id = Column(String, ForeignKey("candidates.id"), nullable=True)
+    job_id = Column(String, ForeignKey("job_postings.id"), nullable=True)
+    result_id = Column(String, ForeignKey("evaluation_results.id"), nullable=True)
+    approval_type = Column(String, nullable=False)  # candidate_hire, candidate_reject, evaluation_approve, decision_approve
+    status = Column(String, nullable=False)  # approved, rejected, pending
+    comment = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    __table_args__ = (UniqueConstraint('user_id', 'candidate_id', 'job_id', 'approval_type', name='unique_user_approval'),)
+
 Base.metadata.create_all(bind=engine)
+
+def slugify(value: Optional[str]) -> str:
+    if not value:
+        return str(uuid4())[:8]
+    value = value.lower()
+    value = re.sub(r'[^a-z0-9]+', '-', value).strip('-')
+    return value or str(uuid4())[:8]
+
+def generate_unique_slug(db, base_slug: str) -> str:
+    slug = base_slug
+    counter = 1
+    while db.query(CompanyDB).filter(CompanyDB.slug == slug).first():
+        slug = f"{base_slug}-{counter}"
+        counter += 1
+    return slug
+
+def ensure_column_exists(table_name: str, column_name: str, declaration: str):
+    with engine.connect() as connection:
+        result = connection.execute(text(f"PRAGMA table_info({table_name})"))
+        columns = [row[1] for row in result]
+        if column_name not in columns:
+            connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {declaration}"))
+
+def ensure_default_company() -> Optional[str]:
+    db = SessionLocal()
+    try:
+        default_name = os.getenv("DEFAULT_COMPANY_NAME", "Barnes Demo")
+        default_domain = os.getenv("DEFAULT_COMPANY_DOMAIN", "barnes.nl").lower()
+        default_slug = slugify(os.getenv("DEFAULT_COMPANY_SLUG", default_name))
+        
+        company = db.query(CompanyDB).filter(
+            or_(CompanyDB.slug == default_slug, CompanyDB.primary_domain == default_domain)
+        ).first()
+        if not company:
+            slug = generate_unique_slug(db, default_slug)
+            company = CompanyDB(
+                name=default_name,
+                slug=slug,
+                primary_domain=default_domain,
+                status="active",
+                plan="demo"
+            )
+            db.add(company)
+            db.commit()
+            db.refresh(company)
+        return company.id
+    finally:
+        db.close()
+
+def assign_users_without_company(default_company_id: Optional[str]):
+    if not default_company_id:
+        return
+    db = SessionLocal()
+    try:
+        users = db.query(UserDB).filter(or_(UserDB.company_id == None, UserDB.company_id == "")).all()
+        if users:
+            for user in users:
+                user.company_id = default_company_id
+            db.commit()
+    finally:
+        db.close()
+
+def get_or_create_company_by_domain(db, domain: Optional[str], fallback_name: Optional[str] = None) -> CompanyDB:
+    company = None
+    normalized_domain = domain.lower() if domain else None
+    if normalized_domain:
+        company = db.query(CompanyDB).filter(func.lower(CompanyDB.primary_domain) == normalized_domain).first()
+    if company:
+        return company
+    name = fallback_name or (normalized_domain.replace('.', ' ').title() if normalized_domain else "Nieuwe organisatie")
+    slug_base = slugify(normalized_domain or name)
+    slug = generate_unique_slug(db, slug_base)
+    company = CompanyDB(
+        name=name,
+        slug=slug,
+        primary_domain=normalized_domain,
+        status="active",
+        plan="trial"
+    )
+    db.add(company)
+    db.commit()
+    db.refresh(company)
+    return company
+
+def seed_sample_company_users():
+    db = SessionLocal()
+    try:
+        domain = "zuljehemhebben.nl"
+        company = db.query(CompanyDB).filter(func.lower(CompanyDB.primary_domain) == domain).first()
+        if not company:
+            company = CompanyDB(
+                name="Zul Je Hem Hebben",
+                slug=generate_unique_slug(db, "zuljehemhebben"),
+                primary_domain=domain,
+                status="active",
+                plan="trial"
+            )
+            db.add(company)
+            db.commit()
+            db.refresh(company)
+        
+        sample_users = [
+            ("vaatje@zuljehemhebben.nl", "Vaatje"),
+            ("diederik@zuljehemhebben.nl", "Diederik")
+        ]
+        created = False
+        for email, name in sample_users:
+            existing = db.query(UserDB).filter(UserDB.email == email).first()
+            if not existing:
+                user = UserDB(email=email, name=name, role="admin", company_id=company.id)
+                db.add(user)
+                created = True
+        if created:
+            db.commit()
+    finally:
+        db.close()
+
+# Ensure schema upgrades for company support
+ensure_column_exists("users", "company_id", "TEXT")
+ensure_column_exists("evaluations", "job_id", "TEXT")
+default_company_id = ensure_default_company()
+assign_users_without_company(default_company_id)
+seed_sample_company_users()
+
+def serialize_company(company: Optional[CompanyDB]):
+    if not company:
+        return None
+    return {
+        "id": company.id,
+        "name": company.name,
+        "slug": company.slug,
+        "primary_domain": company.primary_domain,
+        "plan": company.plan,
+        "status": company.status
+    }
+
+def serialize_user(user: UserDB, company: Optional[CompanyDB] = None):
+    return {
+        "id": user.id,
+        "email": user.email,
+        "name": user.name,
+        "role": user.role,
+        "created_at": user.created_at.isoformat() if user.created_at else None,
+        "company": serialize_company(company or user.company)
+    }
 
 # -----------------------------
 # Seed default personas
@@ -619,6 +911,45 @@ class EvaluationResult(BaseModel):
     final_analysis: str
     final_recommendation: str
 
+class DebateChatRequest(BaseModel):
+    result_id: str
+    question: str
+    persona_name: Optional[str] = None
+
+class CandidateConversationRequest(BaseModel):
+    candidate_id: str
+    job_id: Optional[str] = None
+    title: str
+    summary: str
+    pros: Optional[str] = None
+    cons: Optional[str] = None
+    persona_guidance: Optional[Dict[str, str]] = None
+    created_by: Optional[str] = None
+    conversation_channel: Optional[str] = None
+
+def serialize_conversation_record(conversation: CandidateConversationDB):
+    import json
+    persona_guidance = None
+    if conversation.persona_guidance:
+        try:
+            persona_guidance = json.loads(conversation.persona_guidance)
+        except json.JSONDecodeError:
+            persona_guidance = conversation.persona_guidance
+    return {
+        "id": conversation.id,
+        "candidate_id": conversation.candidate_id,
+        "job_id": conversation.job_id,
+        "title": conversation.title,
+        "summary": conversation.summary,
+        "pros": conversation.pros,
+        "cons": conversation.cons,
+        "persona_guidance": persona_guidance,
+        "conversation_channel": conversation.conversation_channel,
+        "created_by": conversation.created_by,
+        "created_at": conversation.created_at.isoformat() if conversation.created_at else None,
+        "updated_at": conversation.updated_at.isoformat() if conversation.updated_at else None
+    }
+
 # -----------------------------
 # Endpoints
 # -----------------------------
@@ -702,13 +1033,40 @@ async def get_personas():
 
 @app.post("/personas")
 async def create_persona(
-    name: str = Form(...),
-    display_name: str = Form(...),
-    system_prompt: str = Form(...)
+    request: Request
 ):
-    """Create a new evaluation persona"""
+    """Create a new evaluation persona - accepts both JSON and Form data"""
     try:
         db = SessionLocal()
+        
+        # Check content type to handle both JSON and Form data
+        content_type = request.headers.get("content-type", "")
+        
+        if "application/json" in content_type:
+            # Handle JSON request
+            data = await request.json()
+            name = data.get("name", "")
+            display_name = data.get("display_name", "")
+            system_prompt = data.get("system_prompt", "")
+        else:
+            # Handle Form data
+            form_data = await request.form()
+            name = form_data.get("name", "")
+            display_name = form_data.get("display_name", "")
+            system_prompt = form_data.get("system_prompt", "")
+        
+        # Convert list values to strings if needed
+        if isinstance(name, list):
+            name = name[0] if name else ""
+        if isinstance(display_name, list):
+            display_name = display_name[0] if display_name else ""
+        if isinstance(system_prompt, list):
+            system_prompt = system_prompt[0] if system_prompt else ""
+        
+        # Validate required fields
+        if not name or not display_name or not system_prompt:
+            db.close()
+            raise HTTPException(status_code=400, detail="Name, display_name, and system_prompt are required")
         
         # Check if persona with this name already exists
         existing = db.query(PersonaDB).filter(PersonaDB.name == name).first()
@@ -738,6 +1096,8 @@ async def create_persona(
             }
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Error creating persona: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to create persona: {str(e)}")
@@ -745,12 +1105,9 @@ async def create_persona(
 @app.put("/personas/{persona_id}")
 async def update_persona(
     persona_id: str,
-    name: Optional[str] = Form(None),
-    display_name: Optional[str] = Form(None),
-    system_prompt: Optional[str] = Form(None),
-    is_active: Optional[bool] = Form(None)
+    request: Request
 ):
-    """Update a persona"""
+    """Update a persona - accepts both JSON and Form data"""
     try:
         db = SessionLocal()
         
@@ -758,6 +1115,35 @@ async def update_persona(
         if not persona:
             db.close()
             raise HTTPException(status_code=404, detail="Persona not found")
+        
+        # Check content type to handle both JSON and Form data
+        content_type = request.headers.get("content-type", "")
+        
+        if "application/json" in content_type:
+            # Handle JSON request
+            data = await request.json()
+            name = data.get("name")
+            display_name = data.get("display_name")
+            system_prompt = data.get("system_prompt")
+            is_active = data.get("is_active")
+        else:
+            # Handle Form data
+            form_data = await request.form()
+            name = form_data.get("name")
+            display_name = form_data.get("display_name")
+            system_prompt = form_data.get("system_prompt")
+            is_active = form_data.get("is_active")
+            # Convert is_active from string to bool if present
+            if is_active is not None:
+                is_active = str(is_active).lower() in ('true', '1', 'yes', 'on')
+        
+        # Convert list values to strings if needed
+        if isinstance(name, list):
+            name = name[0] if name else None
+        if isinstance(display_name, list):
+            display_name = display_name[0] if display_name else None
+        if isinstance(system_prompt, list):
+            system_prompt = system_prompt[0] if system_prompt else None
         
         # Update only provided fields
         if name is not None:
@@ -990,6 +1376,8 @@ async def upload_job_description(
         # Check content type to handle both JSON and Form data
         content_type = request.headers.get("content-type", "")
         
+        watcher_user_ids = []
+        
         if "application/json" in content_type:
             # Handle JSON request
             data = await request.json()
@@ -999,6 +1387,7 @@ async def upload_job_description(
             requirements = data.get("requirements", "Not specified")
             location = data.get("location", "Not specified")
             salary_range = data.get("salary_range", "Not specified")
+            watcher_user_ids = data.get("watcher_user_ids", [])
         else:
             # Handle Form data (for file uploads)
             form_data = await request.form()
@@ -1040,23 +1429,65 @@ async def upload_job_description(
             raise HTTPException(status_code=400, detail="Title, company, and description are required")
         
         # Create job posting with optional fields
+        from datetime import datetime
         job_posting = JobPostingDB(
             title=title,
             company=company,
             description=description,
             requirements=requirements or "Not specified",
             location=location or "Not specified",
-            salary_range=salary_range or "Not specified"
+            salary_range=salary_range or "Not specified",
+            created_at=datetime.now()  # Set created_at explicitly for SQLite compatibility
         )
         
         db.add(job_posting)
         db.commit()
         db.refresh(job_posting)
+        job_id = job_posting.id
+        
+        # Also add watchers to JobWatcherDB
+        if watcher_user_ids:
+            try:
+                for user_id in watcher_user_ids:
+                    if user_id and user_id.strip():
+                        # Check if already watching
+                        existing = db.query(JobWatcherDB).filter(
+                            JobWatcherDB.job_id == job_id,
+                            JobWatcherDB.user_id == user_id.strip()
+                        ).first()
+                        if not existing:
+                            watcher = JobWatcherDB(job_id=job_id, user_id=user_id.strip())
+                            db.add(watcher)
+                db.commit()
+            except Exception as watcher_error:
+                print(f"Error adding job watchers: {str(watcher_error)}")
+        
+        # Create notifications for watchers
+        if watcher_user_ids:
+            try:
+                for user_id in watcher_user_ids:
+                    if user_id and user_id.strip():
+                        notification = NotificationDB(
+                            user_id=user_id.strip(),
+                            type="job_created",
+                            title=f"Nieuwe vacature: {title}",
+                            message=f"Een nieuwe vacature '{title}' bij {company} is aangemaakt",
+                            related_job_id=job_id
+                        )
+                        db.add(notification)
+                db.commit()
+            except Exception as notif_error:
+                print(f"Error creating job notifications: {str(notif_error)}")
+        
         db.close()
         
         return {
             "success": True,
-            "job_id": job_posting.id,
+            "job": {
+                "id": job_id,
+                "title": title,
+                "company": company
+            },
             "message": "Job description uploaded successfully"
         }
         
@@ -1069,6 +1500,7 @@ async def upload_job_description(
 async def get_job_descriptions():
     """Get all job descriptions"""
     try:
+        import json
         db = SessionLocal()
         jobs = db.query(JobPostingDB).all()
         db.close()
@@ -1084,7 +1516,9 @@ async def get_job_descriptions():
                     "requirements": job.requirements,
                     "location": job.location,
                     "salary_range": job.salary_range,
-                    "created_at": "Recently uploaded"
+                    "ai_analysis": json.loads(job.ai_analysis) if job.ai_analysis else None,
+                    "created_at": job.created_at.isoformat() if job.created_at else "Recently uploaded",
+                    "timeline_stage": job.timeline_stage
                 }
                 for job in jobs
             ]
@@ -1271,7 +1705,8 @@ async def update_job_description(
     description: Optional[str] = Form(None),
     requirements: Optional[str] = Form(None),
     location: Optional[str] = Form(None),
-    salary_range: Optional[str] = Form(None)
+    salary_range: Optional[str] = Form(None),
+    timeline_stage: Optional[str] = Form(None)
 ):
     """Update a job description"""
     try:
@@ -1295,6 +1730,14 @@ async def update_job_description(
             job.location = location
         if salary_range is not None:
             job.salary_range = salary_range
+        if timeline_stage is not None:
+            # Validate timeline_stage value
+            valid_stages = ['waiting', 'inProgress', 'afterFirst', 'multiRound', 'completed']
+            if timeline_stage in valid_stages:
+                job.timeline_stage = timeline_stage
+            else:
+                db.close()
+                raise HTTPException(status_code=400, detail=f"Invalid timeline_stage. Must be one of: {', '.join(valid_stages)}")
         
         db.commit()
         db.refresh(job)
@@ -1321,16 +1764,18 @@ async def update_job_description(
 @app.post("/upload-resume")
 async def upload_resume(
     file: UploadFile = File(...),
-    name: str = Form(...),
-    email: str = Form(...),
-    experience_years: int = Form(...),
-    skills: str = Form(...),
-    education: str = Form(...),
-    job_id: str = Form(...),
+    name: Optional[str] = Form(None),
+    email: Optional[str] = Form(None),
+    experience_years: Optional[int] = Form(None),
+    skills: Optional[str] = Form(None),
+    education: Optional[str] = Form(None),
+    job_id: Optional[str] = Form(None),
+    job_ids: Optional[str] = Form(None),  # Comma-separated list of job IDs for preferential vacatures
     motivational_letter: Optional[str] = Form(None),
     motivation_file: Optional[UploadFile] = File(None),
     company_note: Optional[str] = Form(None),
-    company_note_file: Optional[UploadFile] = File(None)
+    company_note_file: Optional[UploadFile] = File(None),
+    candidate_id: Optional[str] = Form(None)
 ):
     """Upload and process resume file"""
     try:
@@ -1391,35 +1836,86 @@ async def upload_resume(
                 print(f"Error processing company note file: {str(e)}")
                 company_note_text = company_note  # Fallback to text input
         
-        # Parse skills
-        skills_list = [skill.strip() for skill in skills.split(",")]
+        # Parse skills - provide default if not provided
+        if skills:
+            skills_list = [skill.strip() for skill in skills.split(",") if skill.strip()]
+        else:
+            skills_list = []
+        
+        # Provide defaults for optional fields
+        experience_years = experience_years if experience_years is not None else 0
+        education = education if education else "Not specified"
+        
+        # Parse job_ids for preferential vacatures (many-to-many)
+        preferential_job_ids = []
+        if job_ids:
+            preferential_job_ids = [jid.strip() for jid in job_ids.split(",") if jid.strip()]
+        elif job_id:
+            # If single job_id provided, add it to preferential list
+            preferential_job_ids = [job_id]
         
         # Save to database
         db = SessionLocal()
-        candidate_db = CandidateDB(
-            job_id=job_id,
-            name=name,
-            email=email,
-            resume_text=resume_text,
-            motivational_letter=motivation_text,
-            experience_years=experience_years,
-            skills="|".join(skills_list),
-            education=education
-        )
-        db.add(candidate_db)
-        db.commit()
-        db.refresh(candidate_db)
-        candidate_id = candidate_db.id
-        db.close()
+        existing_candidate = None
+        if candidate_id:
+            existing_candidate = db.query(CandidateDB).filter(CandidateDB.id == candidate_id).first()
+            if not existing_candidate:
+                db.close()
+                raise HTTPException(status_code=404, detail="Candidate not found for update")
         
-        return {
+        if existing_candidate:
+            existing_candidate.name = name or existing_candidate.name
+            existing_candidate.email = email or existing_candidate.email
+            existing_candidate.resume_text = resume_text
+            existing_candidate.motivational_letter = motivation_text or existing_candidate.motivational_letter
+            if experience_years is not None:
+                existing_candidate.experience_years = experience_years
+            if skills_list:
+                existing_candidate.skills = "|".join(skills_list)
+            if education:
+                existing_candidate.education = education
+            if job_id:
+                existing_candidate.job_id = job_id
+            if preferential_job_ids:
+                existing_candidate.preferential_job_ids = ",".join(preferential_job_ids)
+            if company_note_text:
+                existing_candidate.company_note = company_note_text
+            db.commit()
+            db.refresh(existing_candidate)
+            candidate_db = existing_candidate
+        else:
+            if not name:
+                db.close()
+                raise HTTPException(status_code=400, detail="Naam is verplicht bij het aanmaken van een nieuwe kandidaat.")
+            candidate_db = CandidateDB(
+                job_id=job_id,
+                name=name,
+                email=email,
+                resume_text=resume_text,
+                motivational_letter=motivation_text,
+                experience_years=experience_years if experience_years is not None else 0,
+                skills="|".join(skills_list) if skills_list else "",
+                education=education or "Not specified",
+                company_note=company_note_text
+            )
+            db.add(candidate_db)
+            db.commit()
+            db.refresh(candidate_db)
+            candidate_id = candidate_db.id
+            if preferential_job_ids:
+                candidate_db.preferential_job_ids = ",".join(preferential_job_ids)
+                db.commit()
+        
+        response_payload = {
             "success": True,
-            "candidate_id": candidate_id,
+            "candidate_id": candidate_db.id,
             "resume_length": len(resume_text),
             "extracted_text": resume_text[:500] + "..." if len(resume_text) > 500 else resume_text,
             "extraction_method": extraction_method,
             "azure_used": azure_used or motivation_azure_used
         }
+        db.close()
+        return response_payload
         
     except Exception as e:
         return {
@@ -1427,9 +1923,90 @@ async def upload_resume(
             "error": str(e)
         }
 
+@app.post("/upload-motivation-letter")
+async def upload_motivation_letter(
+    candidate_id: str = Form(...),
+    motivation_text: Optional[str] = Form(None),
+    motivation_file: Optional[UploadFile] = File(None)
+):
+    """Upload or update a motivation letter for an existing candidate"""
+    try:
+        db = SessionLocal()
+        candidate = db.query(CandidateDB).filter(CandidateDB.id == candidate_id).first()
+        if not candidate:
+            db.close()
+            raise HTTPException(status_code=404, detail="Candidate not found")
+
+        extracted_text = motivation_text
+        azure_used = False
+
+        if motivation_file and motivation_file.filename:
+            file_content = await motivation_file.read()
+            extraction_result = extract_text_from_file(file_content, motivation_file.filename)
+            extracted_text = extraction_result["text"]
+            azure_used = extraction_result.get("azure_used", False)
+            extracted_text = truncate_text_safely(extracted_text, MAX_MOTIVATION_CHARS)
+
+        if not extracted_text:
+            db.close()
+            raise HTTPException(status_code=400, detail="Motivatiebrief ontbreekt of kon niet worden gelezen.")
+
+        candidate.motivational_letter = extracted_text
+        db.commit()
+        db.refresh(candidate)
+        db.close()
+
+        return {
+            "success": True,
+            "candidate_id": candidate_id,
+            "motivation_length": len(extracted_text),
+            "azure_used": azure_used
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to upload motivation letter: {str(e)}")
+
+@app.delete("/candidates/{candidate_id}/motivation")
+async def delete_motivation_letter(candidate_id: str):
+    """Remove stored motivation letter for a candidate"""
+    try:
+        db = SessionLocal()
+        candidate = db.query(CandidateDB).filter(CandidateDB.id == candidate_id).first()
+        if not candidate:
+            db.close()
+            raise HTTPException(status_code=404, detail="Candidate not found")
+        candidate.motivational_letter = None
+        db.commit()
+        db.close()
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete motivation letter: {str(e)}")
+
+@app.delete("/candidates/{candidate_id}/resume")
+async def delete_resume(candidate_id: str):
+    """Remove stored resume text for a candidate"""
+    try:
+        db = SessionLocal()
+        candidate = db.query(CandidateDB).filter(CandidateDB.id == candidate_id).first()
+        if not candidate:
+            db.close()
+            raise HTTPException(status_code=404, detail="Candidate not found")
+        candidate.resume_text = None
+        db.commit()
+        db.close()
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete resume: {str(e)}")
+
 @app.post("/evaluate-candidate")
 async def evaluate_candidate(
     candidate_id: str = Form(...),
+    job_id: Optional[str] = Form(None),  # Allow job_id to be passed from frontend
     handler_id: Optional[str] = Form(None),
     custom_guidelines: Optional[str] = Form(None),
     strictness: Optional[str] = Form("medium"),
@@ -1467,13 +2044,24 @@ async def evaluate_candidate(
             db.close()
             raise HTTPException(status_code=404, detail="Candidate not found")
         
-        # ENFORCE JOB-SPECIFIC EVALUATION: Must have job_id
-        if not candidate.job_id:
+        # Determine which job_id to use: passed parameter, candidate.job_id, or first preferential job
+        evaluation_job_id = None
+        if job_id:
+            evaluation_job_id = job_id
+        elif candidate.job_id:
+            evaluation_job_id = candidate.job_id
+        elif candidate.preferential_job_ids:
+            # Use first preferential job if no job_id is set
+            preferential_list = [jid.strip() for jid in candidate.preferential_job_ids.split(",") if jid.strip()]
+            if preferential_list:
+                evaluation_job_id = preferential_list[0]
+        
+        if not evaluation_job_id:
             db.close()
             raise HTTPException(status_code=400, detail="Evaluation requires a job posting. Please select a job before evaluating.")
         
         # Verify job posting exists
-        job = db.query(JobPostingDB).filter(JobPostingDB.id == candidate.job_id).first()
+        job = db.query(JobPostingDB).filter(JobPostingDB.id == evaluation_job_id).first()
         if not job:
             db.close()
             raise HTTPException(status_code=404, detail="Associated job posting not found")
@@ -1526,8 +2114,8 @@ async def evaluate_candidate(
         # Get job information if available (outside loop, shared for all personas)
         # IMPORTANT: Truncate all text BEFORE building prompts to stay within token limits
         job_info = ""
-        if candidate.job_id:
-            job = db.query(JobPostingDB).filter(JobPostingDB.id == candidate.job_id).first()
+        if evaluation_job_id:
+            job = db.query(JobPostingDB).filter(JobPostingDB.id == evaluation_job_id).first()
             if job:
                 # Truncate job description and requirements to stay within limits
                 job_desc = truncate_text_safely(job.description or "", MAX_JOB_DESC_CHARS)
@@ -1910,6 +2498,10 @@ BELANGRIJK:
             "combined_recommendation": combined_recommendation,
             "combined_score": combined_score
         }
+        result_data["persona_prompts"] = persona_prompts
+        
+        # Initialize result_id variable
+        result_id = None
         
         # Save result to database
         try:
@@ -1921,21 +2513,23 @@ BELANGRIJK:
             # Check if result already exists (for caching)
             existing_result = db.query(EvaluationResultDB).filter(
                 EvaluationResultDB.candidate_id == candidate_id,
-                EvaluationResultDB.job_id == candidate.job_id,
+                EvaluationResultDB.job_id == evaluation_job_id,
                 EvaluationResultDB.result_type == 'evaluation',
                 EvaluationResultDB.selected_personas == persona_ids_json
             ).first()
             
+            result_id = None
             if existing_result:
                 # Update existing result
                 existing_result.result_data = result_json
                 existing_result.company_note = company_note
                 existing_result.updated_at = func.now()
+                result_id = existing_result.id
             else:
                 # Create new result
                 evaluation_result = EvaluationResultDB(
                     candidate_id=candidate_id,
-                    job_id=candidate.job_id,
+                    job_id=evaluation_job_id,
                     result_type='evaluation',
                     result_data=result_json,
                     selected_personas=persona_ids_json,
@@ -1944,6 +2538,28 @@ BELANGRIJK:
                 db.add(evaluation_result)
             
             db.commit()
+            if not result_id:
+                db.refresh(evaluation_result)
+                result_id = evaluation_result.id
+                
+                # Create notifications for job watchers
+                try:
+                    watchers = db.query(JobWatcherDB).filter(JobWatcherDB.job_id == evaluation_job_id).all()
+                    for watcher in watchers:
+                        notification = NotificationDB(
+                            user_id=watcher.user_id,
+                            type="evaluation_complete",
+                            title=f"Evaluatie voltooid voor {candidate.name}",
+                            message=f"Evaluatie is voltooid voor {candidate.name} bij {job.title if job else 'vacature'}",
+                            related_candidate_id=candidate_id,
+                            related_job_id=evaluation_job_id,
+                            related_result_id=result_id
+                        )
+                        db.add(notification)
+                    db.commit()
+                except Exception as notif_error:
+                    print(f"Error creating notifications: {str(notif_error)}")
+                    # Don't fail the whole request if notifications fail
         except Exception as e:
             print(f"Error saving evaluation result: {str(e)}")
             import traceback
@@ -1957,7 +2573,8 @@ BELANGRIJK:
             "persona_count": len(persona_evaluations),
             "combined_analysis": combined_analysis,
             "combined_recommendation": combined_recommendation,
-            "combined_score": combined_score
+            "combined_score": combined_score,
+            "result_id": result_id  # Include result_id so frontend can navigate directly
         }
         
     except Exception as e:
@@ -1975,7 +2592,13 @@ async def get_candidates(job_id: Optional[str] = None):
         # Get candidates with their evaluations and job info
         query = db.query(CandidateDB)
         if job_id:
-            query = query.filter(CandidateDB.job_id == job_id)
+            # Filter by job_id OR by preferential_job_ids containing the job_id
+            query = query.filter(
+                or_(
+                    CandidateDB.job_id == job_id,
+                    CandidateDB.preferential_job_ids.like(f"%{job_id}%")
+                )
+            )
         candidates = query.all()
         
         result = []
@@ -1994,6 +2617,7 @@ async def get_candidates(job_id: Optional[str] = None):
             
             # Get evaluations
             evaluations = db.query(EvaluationDB).filter(EvaluationDB.candidate_id == candidate.id).all()
+            conversation_count = db.query(CandidateConversationDB).filter(CandidateConversationDB.candidate_id == candidate.id).count()
             
             result.append({
                 "id": candidate.id,
@@ -2002,8 +2626,13 @@ async def get_candidates(job_id: Optional[str] = None):
                 "experience_years": candidate.experience_years,
                 "skills": candidate.skills,
                 "education": candidate.education,
+                "motivational_letter": candidate.motivational_letter,  # Include motivation letter
+                "resume_text": candidate.resume_text[:200] + "..." if candidate.resume_text and len(candidate.resume_text) > 200 else candidate.resume_text,  # Preview
                 "created_at": candidate.created_at.isoformat() if candidate.created_at else None,
                 "job": job_info,
+                "job_id": candidate.job_id,
+                "preferential_job_ids": candidate.preferential_job_ids,  # Include preferential job IDs
+                "company_note": candidate.company_note,  # Include company note from supplying company
                 "evaluations": [
                     {
                         "id": eval.id,
@@ -2013,7 +2642,8 @@ async def get_candidates(job_id: Optional[str] = None):
                     }
                     for eval in evaluations
                 ],
-                "evaluation_count": len(evaluations)
+                "evaluation_count": len(evaluations),
+                "conversation_count": conversation_count
             })
         
         db.close()
@@ -2027,9 +2657,152 @@ async def get_candidates(job_id: Optional[str] = None):
         print(f"Error getting candidates: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to get candidates: {str(e)}")
 
+@app.get("/candidate-conversations")
+async def get_candidate_conversations(candidate_id: str = Query(...), job_id: Optional[str] = Query(None)):
+    """Fetch stored candidate conversations"""
+    try:
+        db = SessionLocal()
+        query = db.query(CandidateConversationDB).filter(CandidateConversationDB.candidate_id == candidate_id)
+        if job_id:
+            query = query.filter(
+                or_(
+                    CandidateConversationDB.job_id == job_id,
+                    CandidateConversationDB.job_id.is_(None)
+                )
+            )
+        conversations = query.order_by(CandidateConversationDB.created_at.desc()).all()
+        result = [serialize_conversation_record(conv) for conv in conversations]
+        db.close()
+        return {"success": True, "conversations": result}
+    except Exception as e:
+        print(f"Error fetching candidate conversations: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch conversations: {str(e)}")
+
+@app.post("/candidate-conversations")
+async def create_candidate_conversation(request_data: CandidateConversationRequest):
+    """Store a new candidate conversation and optional persona guidance"""
+    try:
+        import json
+        db = SessionLocal()
+        candidate = db.query(CandidateDB).filter(CandidateDB.id == request_data.candidate_id).first()
+        if not candidate:
+            db.close()
+            raise HTTPException(status_code=404, detail="Candidate not found")
+
+        conversation = CandidateConversationDB(
+            candidate_id=request_data.candidate_id,
+            job_id=request_data.job_id or candidate.job_id,
+            title=request_data.title,
+            summary=request_data.summary,
+            pros=request_data.pros,
+            cons=request_data.cons,
+            created_by=request_data.created_by,
+            conversation_channel=request_data.conversation_channel
+        )
+
+        if request_data.persona_guidance:
+            conversation.persona_guidance = json.dumps(request_data.persona_guidance)
+
+        db.add(conversation)
+        db.commit()
+        db.refresh(conversation)
+        conversation_id = conversation.id
+        
+        # Create notifications for job and candidate watchers
+        try:
+            job_id_for_notif = request_data.job_id or candidate.job_id
+            if job_id_for_notif:
+                # Notify job watchers
+                job_watchers = db.query(JobWatcherDB).filter(JobWatcherDB.job_id == job_id_for_notif).all()
+                for watcher in job_watchers:
+                    notification = NotificationDB(
+                        user_id=watcher.user_id,
+                        type="conversation_added",
+                        title=f"Nieuw gesprek met {candidate.name}",
+                        message=f"Een nieuw gesprek is toegevoegd voor {candidate.name}: {request_data.title}",
+                        related_candidate_id=request_data.candidate_id,
+                        related_job_id=job_id_for_notif
+                    )
+                    db.add(notification)
+            
+            # Notify candidate watchers
+            candidate_watchers = db.query(CandidateWatcherDB).filter(CandidateWatcherDB.candidate_id == request_data.candidate_id).all()
+            for watcher in candidate_watchers:
+                notification = NotificationDB(
+                    user_id=watcher.user_id,
+                    type="conversation_added",
+                    title=f"Nieuw gesprek met {candidate.name}",
+                    message=f"Een nieuw gesprek is toegevoegd voor {candidate.name}: {request_data.title}",
+                    related_candidate_id=request_data.candidate_id,
+                    related_job_id=job_id_for_notif
+                )
+                db.add(notification)
+            
+            db.commit()
+        except Exception as notif_error:
+            print(f"Error creating conversation notifications: {str(notif_error)}")
+            # Don't fail the whole request if notifications fail
+
+        response = serialize_conversation_record(conversation)
+        db.close()
+        return {"success": True, "conversation": response}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating conversation: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to save conversation: {str(e)}")
+
+@app.get("/candidates/{candidate_id}")
+async def get_candidate_detail(candidate_id: str):
+    """Detailed candidate view including full resume and conversations"""
+    try:
+        db = SessionLocal()
+        candidate = db.query(CandidateDB).filter(CandidateDB.id == candidate_id).first()
+        if not candidate:
+            db.close()
+            raise HTTPException(status_code=404, detail="Candidate not found")
+
+        job_info = None
+        if candidate.job_id:
+            job = db.query(JobPostingDB).filter(JobPostingDB.id == candidate.job_id).first()
+            if job:
+                job_info = {
+                    "id": job.id,
+                    "title": job.title,
+                    "company": job.company,
+                    "location": job.location
+                }
+
+        conversation_count = db.query(CandidateConversationDB).filter(CandidateConversationDB.candidate_id == candidate.id).count()
+
+        result = {
+            "id": candidate.id,
+            "name": candidate.name,
+            "email": candidate.email,
+            "job_id": candidate.job_id,
+            "job": job_info,
+            "resume_text": candidate.resume_text,
+            "motivational_letter": candidate.motivational_letter,
+            "experience_years": candidate.experience_years,
+            "skills": candidate.skills,
+            "education": candidate.education,
+            "preferential_job_ids": candidate.preferential_job_ids,
+            "company_note": candidate.company_note,
+            "created_at": candidate.created_at.isoformat() if candidate.created_at else None,
+            "conversation_count": conversation_count
+        }
+        db.close()
+        return {"success": True, "candidate": result}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error fetching candidate detail: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch candidate detail: {str(e)}")
+
 @app.post("/debate-candidate")
 async def debate_candidate(
     candidate_id: str = Form(...),
+    job_id: Optional[str] = Form(None),  # Allow job_id to be passed from frontend
     company_note: Optional[str] = Form(None),
     company_note_file: Optional[UploadFile] = File(None),
     request: Request = None
@@ -2056,10 +2829,26 @@ async def debate_candidate(
             db.close()
             raise HTTPException(status_code=404, detail="Candidate not found")
         
+        # Determine which job_id to use: passed parameter, candidate.job_id, or first preferential job
+        debate_job_id = None
+        if job_id:
+            debate_job_id = job_id
+        elif candidate.job_id:
+            debate_job_id = candidate.job_id
+        elif candidate.preferential_job_ids:
+            # Use first preferential job if no job_id is set
+            preferential_list = [jid.strip() for jid in candidate.preferential_job_ids.split(",") if jid.strip()]
+            if preferential_list:
+                debate_job_id = preferential_list[0]
+        
+        if not debate_job_id:
+            db.close()
+            raise HTTPException(status_code=400, detail="Debate requires a job posting. Please select a job before running debate.")
+        
         # Get job information if available
         job_info = ""
-        if candidate.job_id:
-            job = db.query(JobPostingDB).filter(JobPostingDB.id == candidate.job_id).first()
+        if debate_job_id:
+            job = db.query(JobPostingDB).filter(JobPostingDB.id == debate_job_id).first()
             if job:
                 job_info = f"""
 
@@ -2176,6 +2965,9 @@ Each persona should provide their evaluation and then engage in a professional d
             "tokens_used": 0  # LangChain doesn't return token count in same format
         }
         
+        # Initialize result_id variable
+        result_id = None
+        
         # Save debate result to database
         try:
             import json
@@ -2186,21 +2978,21 @@ Each persona should provide their evaluation and then engage in a professional d
             # Check if result already exists (for caching)
             existing_result = db.query(EvaluationResultDB).filter(
                 EvaluationResultDB.candidate_id == candidate_id,
-                EvaluationResultDB.job_id == candidate.job_id,
+                EvaluationResultDB.job_id == debate_job_id,
                 EvaluationResultDB.result_type == 'debate',
                 EvaluationResultDB.selected_personas == persona_ids_json
             ).first()
-            
             if existing_result:
                 # Update existing result
                 existing_result.result_data = result_json
                 existing_result.company_note = company_note
                 existing_result.updated_at = func.now()
+                result_id = existing_result.id
             else:
                 # Create new result
                 debate_result = EvaluationResultDB(
                     candidate_id=candidate_id,
-                    job_id=candidate.job_id,
+                    job_id=debate_job_id,
                     result_type='debate',
                     result_data=result_json,
                     selected_personas=persona_ids_json,
@@ -2209,6 +3001,28 @@ Each persona should provide their evaluation and then engage in a professional d
                 db.add(debate_result)
             
             db.commit()
+            if not result_id:
+                db.refresh(debate_result)
+                result_id = debate_result.id
+                
+                # Create notifications for job watchers
+                try:
+                    watchers = db.query(JobWatcherDB).filter(JobWatcherDB.job_id == debate_job_id).all()
+                    for watcher in watchers:
+                        notification = NotificationDB(
+                            user_id=watcher.user_id,
+                            type="debate_complete",
+                            title=f"Expert debat voltooid voor {candidate.name}",
+                            message=f"Expert debat is voltooid voor {candidate.name} bij {job.title if job else 'vacature'}",
+                            related_candidate_id=candidate_id,
+                            related_job_id=debate_job_id,
+                            related_result_id=result_id
+                        )
+                        db.add(notification)
+                    db.commit()
+                except Exception as notif_error:
+                    print(f"Error creating notifications: {str(notif_error)}")
+                    # Don't fail the whole request if notifications fail
         except Exception as e:
             print(f"Error saving debate result: {str(e)}")
             import traceback
@@ -2221,13 +3035,127 @@ Each persona should provide their evaluation and then engage in a professional d
             "success": True,
             "debate": response,
             "tokens_used": 0,  # LangChain doesn't return token count in same format
-            "full_prompt": full_prompt_text
+            "full_prompt": full_prompt_text,
+            "result_id": result_id  # Include result_id so frontend can navigate directly
         }
         
     except Exception as e:
         print(f"Error in debate: {str(e)}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Debate failed: {str(e)}")
+
+@app.post("/debate-chat")
+async def debate_chat(request: DebateChatRequest):
+    """Allow users to chat with personas after a debate has concluded"""
+    try:
+        import json
+
+        question = (request.question or "").strip()
+        if not question:
+            raise HTTPException(status_code=400, detail="Question is required")
+
+        db = SessionLocal()
+        try:
+            result = db.query(EvaluationResultDB).filter(EvaluationResultDB.id == request.result_id).first()
+            if not result or result.result_type != 'debate':
+                raise HTTPException(status_code=404, detail="Debate result not found")
+
+            debate_data = result.result_data
+            if isinstance(debate_data, str):
+                try:
+                    debate_data = json.loads(debate_data)
+                except json.JSONDecodeError:
+                    debate_data = {"debate": debate_data}
+
+            candidate = db.query(CandidateDB).filter(CandidateDB.id == result.candidate_id).first()
+            job = db.query(JobPostingDB).filter(JobPostingDB.id == result.job_id).first()
+
+            selected_personas = []
+            if result.selected_personas:
+                try:
+                    selected_personas = json.loads(result.selected_personas) if isinstance(result.selected_personas, str) else result.selected_personas
+                except json.JSONDecodeError:
+                    selected_personas = []
+
+            persona_records = []
+            if selected_personas:
+                persona_records = db.query(PersonaDB).filter(PersonaDB.name.in_(selected_personas)).all()
+            persona_map = {p.name: p for p in persona_records}
+
+            persona_focus = None
+            if request.persona_name:
+                persona_focus = persona_map.get(request.persona_name)
+                if not persona_focus:
+                    raise HTTPException(status_code=400, detail="Selected persona was not part of the debate")
+
+            debate_summary = ""
+            transcript = debate_data.get("debate") if isinstance(debate_data, dict) else None
+            if isinstance(transcript, list):
+                debate_summary = "\n".join([
+                    f"{msg.get('role', 'Expert')}: {msg.get('content', '').strip()}"
+                    for msg in transcript if msg.get('content')
+                ])
+            elif isinstance(transcript, str):
+                debate_summary = transcript
+
+            company_note = result.company_note or ""
+
+            if persona_focus:
+                responder_name = persona_focus.display_name
+                system_prompt = (
+                    f"Je bent {persona_focus.display_name}, een digitale werknemer die kandidaten beoordeelt voor {job.title if job else 'deze functie'}.\n"
+                    "Beantwoord vervolgvragen gebaseerd op het eerdere debat en spreek altijd in het Nederlands vanuit jouw perspectief."
+                )
+            else:
+                responder_name = "Moderator"
+                system_prompt = (
+                    "Je bent de moderator van het expertdebat en geeft antwoorden namens alle digitale werknemers.\n"
+                    "Vat relevante inzichten samen en antwoord in het Nederlands."
+                )
+
+            context_sections = []
+            if job:
+                context_sections.append(f"Vacature: {job.title} bij {job.company} ({job.location or 'locatie onbekend'})")
+            if candidate:
+                context_sections.append(f"Kandidaat: {candidate.name} ({candidate.email or 'email onbekend'})")
+            if company_note:
+                context_sections.append(f"Bedrijfsnotitie: {company_note}")
+            if debate_summary:
+                context_sections.append(f"Samenvatting debat:\n{debate_summary}")
+
+            context_text = "\n\n".join(context_sections)
+            user_prompt = (
+                f"{context_text}\n\n"
+                f"Vraag van gebruiker: {question}\n\n"
+                "Geef een concreet en bruikbaar antwoord. Verwijs naar inzichten uit het debat indien relevant."
+            )
+
+            ai_response = call_openai_safe(
+                [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                max_tokens=700,
+                temperature=0.4,
+                model=OPENAI_MODEL_DEBATE
+            )
+
+            if not ai_response["success"]:
+                raise HTTPException(status_code=500, detail=f"AI chat failed: {ai_response['error']}")
+
+            answer = ai_response["result"].choices[0].message.content.strip()
+            return {
+                "success": True,
+                "answer": answer,
+                "persona": responder_name
+            }
+        finally:
+            db.close()
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in debate_chat: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to chat with personas: {str(e)}")
 
 # -----------------------------
 # Job Analysis endpoint
@@ -2322,54 +3250,80 @@ async def analyze_job(job_id: str = Form(...)):
                     detail=f"Job posting with ID '{job_id}' not found. The job may have been deleted or the ID is invalid. Please select a valid job posting from the dropdown.{available_info}{debug_info}"
                 )
         
-        # Build comprehensive analysis prompt
-        system_prompt = """You are an expert job market analyst and HR consultant. Thoroughly analyze job postings with deep insight into:
+        # Build comprehensive analysis prompt (in Dutch)
+        system_prompt = """Je bent een Nederlandstalige HR-consultant en arbeidsmarktanalist. Je onderzoekt vacatures kritisch en levert beknopte, kwantitatieve inzichten.
 
-1. **Role Analysis**: Deep dive into what this role actually entails based on the title and description
-2. **Correctness**: Are the requirements realistic? Is the description accurate and complete?
-3. **Description-to-Role Match**: Does the job description accurately reflect the job title? Are they aligned?
-4. **Research Quality**: Is the role well-defined? Are expectations clear and industry-standard?
-5. **Role Extension**: Should this role be split, extended, or combined? Research similar roles in the market.
+Richtlijnen:
+1. Analyseer steeds vanuit vier invalshoeken: Analyse, Match, Correctheid en Kwaliteit.
+2. Geef voor elk onderdeel een score tussen 1 en 10 (met één decimaal) en een korte samenvatting (max. 4 zinnen).
+3. Formuleer voor roluitbreiding concrete vervolgstappen met prioriteit en impact.
+4. Antwoord altijd uitsluitend in het Nederlands.
 
-Provide detailed, actionable analysis based on industry standards and market research."""
+Lever uitsluitend het gevraagde JSON-formaat aan en respecteer de rating-range strikt."""
         
-        # Prepare detailed user prompt
-        description_text = job.description or "No description provided"
-        requirements_text = job.requirements or "No requirements specified"
-        location_text = job.location or "Not specified"
-        salary_text = job.salary_range or "Not specified"
+        # Prepare detailed user prompt (in Dutch)
+        description_text = job.description or "Geen beschrijving opgegeven"
+        requirements_text = job.requirements or "Geen vereisten gespecificeerd"
+        location_text = job.location or "Niet gespecificeerd"
+        salary_text = job.salary_range or "Niet gespecificeerd"
         
-        user_prompt = f"""Conduct a comprehensive analysis of this job posting:
+        user_prompt = f"""Voer een grondige analyse uit van deze vacature:
 
-JOB TITLE: {job.title}
-COMPANY: {job.company}
-LOCATION: {location_text}
-SALARY RANGE: {salary_text}
+FUNCTIETITEL: {job.title}
+BEDRIJF: {job.company}
+LOCATIE: {location_text}
+SALARISBEREIK: {salary_text}
 
-JOB DESCRIPTION:
+VACATUREBESCHRIJVING:
 {description_text}
 
-JOB REQUIREMENTS:
+FUNCTIE-EISEN:
 {requirements_text}
 
-Analyze this posting thoroughly. Consider:
-- Does the job description accurately match what someone with the title "{job.title}" typically does?
-- Are there discrepancies between the title and the actual duties described?
-- Is the description comprehensive enough? What's missing?
-- Are the requirements aligned with the role expectations?
-- Based on industry standards, should this role be split, extended, or remain as-is?
+Analyseer deze vacature grondig. Overweeg:
+- Komt de vacaturetekst overeen met wat iemand met de titel "{job.title}" typisch doet?
+- Zijn er discrepanties tussen de titel en de beschreven taken?
+- Is de beschrijving uitgebreid genoeg? Wat ontbreekt er?
+- Zijn de vereisten afgestemd op de rolverwachtingen?
+- Op basis van industrie-standaarden, moet deze rol gesplitst, uitgebreid of blijven zoals het is?
 
-IMPORTANT: You MUST respond with ONLY valid JSON. No markdown code blocks, no explanations outside the JSON. Return ONLY a JSON object in this exact format:
+BELANGRIJK: reageer ALLEEN met geldig JSON (geen markdown). Gebruik exact dit formaat:
 
 {{
-  "role_analysis": "Detailed analysis of what this role actually entails based on the title and description",
-  "description_match": "Assessment of whether the description accurately matches the role title and typical responsibilities",
-  "correctness": "Assessment of requirements realism, description accuracy, and completeness",
-  "research_quality": "Quality of role definition, clarity of expectations, and industry alignment",
-  "role_extension": "Recommendation on whether role should be extended/split, with market research findings"
+  "analysis": {{
+    "summary": "Korte analyse in het Nederlands",
+    "rating": 8.4
+  }},
+  "match": {{
+    "summary": "Hoe goed de beschrijving overeenkomt met de titel",
+    "rating": 7.1
+  }},
+  "correctness": {{
+    "summary": "Beoordeling van realisme en volledigheid",
+    "rating": 8.0
+  }},
+  "quality": {{
+    "summary": "Kwaliteit van onderzoek/onderbouwing",
+    "rating": 7.6
+  }},
+  "extension": {{
+    "overview": "Belangrijkste observaties over roluitbreiding",
+    "advice": "handhaven|uitbreiden|opsplitsen",
+    "recommended_actions": [
+      {{
+        "title": "Concrete stap",
+        "impact": "Waarom dit belangrijk is",
+        "priority": "hoog|middel|laag"
+      }}
+    ]
+  }}
 }}
 
-Be thorough, specific, and provide actionable insights. Return ONLY the JSON object, nothing else."""
+Regels:
+- Geef voor Analyse, Match, Correctheid en Kwaliteit altijd een score tussen 1 en 10 met één decimaal.
+- Houd elke summary compact (max. 4 zinnen) en actiegericht.
+- Lever maximaal drie aanbevolen acties met duidelijke prioriteit.
+- Antwoord volledig in het Nederlands en geef niets buiten het JSON-object."""
         
         # Call OpenAI with web search capability
         print(f"Calling OpenAI for job analysis. Model: {OPENAI_MODEL_JOB_ANALYSIS}, Max tokens: {OPENAI_MAX_TOKENS_JOB_ANALYSIS}")
@@ -2459,25 +3413,118 @@ Be thorough, specific, and provide actionable insights. Return ONLY the JSON obj
         if not analysis or len(analysis) == 0:
             print("Warning: Empty analysis object")
             analysis = {
-                "role_analysis": "Analysis completed but returned empty",
-                "description_match": "Analysis unavailable",
-                "correctness": "Analysis unavailable",
-                "research_quality": "Analysis unavailable",
-                "role_extension": "Analysis unavailable"
+                "analysis": {"summary": "Analyse niet beschikbaar", "rating": None},
+                "match": {"summary": "Match niet beschikbaar", "rating": None},
+                "correctness": {"summary": "Correctheid niet beschikbaar", "rating": None},
+                "quality": {"summary": "Kwaliteit niet beschikbaar", "rating": None},
+                "extension": {"overview": "Geen gegevens", "advice": "", "recommended_actions": []}
             }
+
+        def clamp_rating(value):
+            try:
+                rating = float(value)
+                return round(max(1.0, min(10.0, rating)), 1)
+            except (TypeError, ValueError):
+                return None
+
+        def extract_value(source, keys):
+            if not isinstance(source, dict):
+                return None
+            for key in keys:
+                if key in source:
+                    return source[key]
+            return None
+
+        def normalize_section(keys, label, fallback_text):
+            raw_section = extract_value(analysis, keys)
+            summary = ""
+            rating = None
+            if isinstance(raw_section, dict):
+                summary = raw_section.get("summary") or raw_section.get("samenvatting") or raw_section.get("analysis") or raw_section.get("description") or ""
+                rating = clamp_rating(raw_section.get("rating") or raw_section.get("score"))
+            elif isinstance(raw_section, (str, int, float)):
+                summary = str(raw_section)
+            elif raw_section is None:
+                summary = ""
+
+            summary = (summary or "").strip() or fallback_text
+            return {
+                "label": label,
+                "summary": summary,
+                "rating": rating
+            }
+
+        def normalize_extension():
+            raw_extension = extract_value(analysis, ["extension", "uitbreiding", "role_extension"])
+            overview = ""
+            advice = ""
+            recommended_actions = []
+
+            if isinstance(raw_extension, dict):
+                overview = raw_extension.get("overview") or raw_extension.get("samenvatting") or raw_extension.get("analysis") or ""
+                advice = raw_extension.get("advice") or raw_extension.get("advies") or raw_extension.get("status") or ""
+                raw_actions = raw_extension.get("recommended_actions") or raw_extension.get("aanbevolen_acties") or raw_extension.get("actions") or []
+            elif isinstance(raw_extension, str):
+                overview = raw_extension
+                raw_actions = []
+            else:
+                raw_actions = []
+
+            normalized_actions = []
+            if isinstance(raw_actions, list):
+                for action in raw_actions:
+                    if isinstance(action, dict):
+                        normalized_actions.append({
+                            "title": action.get("title") or action.get("naam") or action.get("actie") or "Aanbeveling",
+                            "impact": action.get("impact") or action.get("toelichting") or "",
+                            "priority": (action.get("priority") or action.get("prioriteit") or "middel").lower()
+                        })
+                    elif isinstance(action, str):
+                        normalized_actions.append({
+                            "title": action,
+                            "impact": "",
+                            "priority": "middel"
+                        })
+            elif isinstance(raw_actions, str):
+                normalized_actions.append({
+                    "title": raw_actions,
+                    "impact": "",
+                    "priority": "middel"
+                })
+
+            return {
+                "overview": (overview or "Geen extra informatie").strip(),
+                "advice": (advice or "").strip(),
+                "recommended_actions": normalized_actions
+            }
+
+        normalized_analysis = {
+            "analysis": normalize_section(["analysis", "analyse", "role_analysis"], "Analyse", "Geen analyse beschikbaar"),
+            "match": normalize_section(["match", "description_match", "beschrijving_match"], "Match", "Geen match-informatie beschikbaar"),
+            "correctness": normalize_section(["correctness", "juistheid"], "Correctheid", "Geen beoordeling beschikbaar"),
+            "quality": normalize_section(["quality", "research_quality", "onderzoekskwaliteit"], "Kwaliteit", "Geen onderbouwing beschikbaar"),
+            "extension": normalize_extension()
+        }
+
+        # Save AI analysis to database
+        try:
+            import json
+            analysis_json = json.dumps(normalized_analysis)
+            job.ai_analysis = analysis_json
+            db.commit()
+            print(f"AI analysis saved to job {job.id}")
+        except Exception as e:
+            print(f"Error saving AI analysis to database: {str(e)}")
+            # Continue even if saving fails
         
         db.close()
         
         result = {
             "success": True,
-            "role_analysis": analysis.get("role_analysis", "Analysis unavailable"),
-            "description_match": analysis.get("description_match", "Analysis unavailable"),
-            "correctness": analysis.get("correctness", "Analysis unavailable"),
-            "research_quality": analysis.get("research_quality", "Analysis unavailable"),
-            "role_extension": analysis.get("role_extension", "Analysis unavailable")
+            **normalized_analysis
         }
         
-        print(f"Returning analysis result with {len([k for k, v in result.items() if v and v != 'Analysis unavailable']) - 1} populated fields")
+        print("Returning analysis result with updated scoring model")
         return result
         
     except HTTPException:
@@ -2628,6 +3675,8 @@ async def get_evaluation_results(
             query = query.filter(EvaluationResultDB.result_type == result_type)
         
         results = query.order_by(EvaluationResultDB.created_at.desc()).all()
+        candidate_cache = {}
+        job_cache = {}
         
         import json
         result_list = []
@@ -2636,10 +3685,19 @@ async def get_evaluation_results(
                 result_data = json.loads(result.result_data)
                 persona_ids = json.loads(result.selected_personas) if result.selected_personas else []
                 
+                if result.candidate_id not in candidate_cache:
+                    candidate_obj = db.query(CandidateDB).filter(CandidateDB.id == result.candidate_id).first()
+                    candidate_cache[result.candidate_id] = candidate_obj.name if candidate_obj else None
+                if result.job_id not in job_cache:
+                    job_obj = db.query(JobPostingDB).filter(JobPostingDB.id == result.job_id).first()
+                    job_cache[result.job_id] = job_obj.title if job_obj else None
+                
                 result_list.append({
                     "id": result.id,
                     "candidate_id": result.candidate_id,
+                    "candidate_name": candidate_cache.get(result.candidate_id),
                     "job_id": result.job_id,
+                    "job_title": job_cache.get(result.job_id),
                     "result_type": result.result_type,
                     "selected_personas": persona_ids,
                     "company_note": result.company_note,
@@ -2695,6 +3753,39 @@ async def get_evaluation_result(result_id: str):
     except Exception as e:
         print(f"Error getting evaluation result: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to get evaluation result: {str(e)}")
+
+@app.delete("/evaluation-results/{result_id}")
+async def delete_evaluation_result(result_id: str):
+    """Delete an evaluation or debate result"""
+    try:
+        print(f"DELETE request received for evaluation result: {result_id}")
+        db = SessionLocal()
+        result = db.query(EvaluationResultDB).filter(EvaluationResultDB.id == result_id).first()
+        
+        if not result:
+            db.close()
+            print(f"Result not found: {result_id}")
+            raise HTTPException(status_code=404, detail="Result not found")
+        
+        # Log what we're deleting
+        print(f"Deleting result: ID={result.id}, Type={result.result_type}, Candidate={result.candidate_id}, Job={result.job_id}")
+        
+        db.delete(result)
+        db.commit()
+        db.close()
+        
+        print(f"Successfully deleted result: {result_id}")
+        return {
+            "success": True,
+            "message": "Result deleted successfully"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting evaluation result: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to delete evaluation result: {str(e)}")
 
 @app.delete("/candidates/{candidate_id}")
 async def delete_candidate(candidate_id: str):
@@ -2769,6 +3860,1136 @@ async def assign_jobs_to_candidate(
     except Exception as e:
         print(f"Error assigning jobs: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to assign jobs: {str(e)}")
+
+# -----------------------------
+# User Management Endpoints
+# -----------------------------
+
+@app.get("/users")
+async def get_users(user_id: Optional[str] = None, email: Optional[str] = None, company_id: Optional[str] = None):
+    """Get all users"""
+    try:
+        db = SessionLocal()
+        query = db.query(UserDB, CompanyDB).outerjoin(CompanyDB, UserDB.company_id == CompanyDB.id)
+        query = query.filter(UserDB.is_active == True)
+        if user_id:
+            query = query.filter(UserDB.id == user_id)
+        if email:
+            query = query.filter(func.lower(UserDB.email) == email.lower())
+        if company_id:
+            query = query.filter(UserDB.company_id == company_id)
+        users = query.all()
+        db.close()
+        return {
+            "success": True,
+            "users": [
+                serialize_user(user, company)
+                for user, company in users
+            ]
+        }
+    except Exception as e:
+        print(f"Error getting users: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get users: {str(e)}")
+
+@app.post("/users")
+async def create_user(
+    email: str = Form(...),
+    name: str = Form(...),
+    role: str = Form("user"),
+    company_id: Optional[str] = Form(None),
+    company_name: Optional[str] = Form(None)
+):
+    """Create a new user"""
+    try:
+        db = SessionLocal()
+        # Check if user already exists
+        existing = db.query(UserDB).filter(UserDB.email == email).first()
+        if existing:
+            db.close()
+            raise HTTPException(status_code=400, detail="User with this email already exists")
+        
+        company = None
+        if company_id:
+            company = db.query(CompanyDB).filter(CompanyDB.id == company_id).first()
+            if not company:
+                db.close()
+                raise HTTPException(status_code=404, detail="Company not found")
+        
+        if not company:
+            domain = email.split('@')[1].lower() if '@' in email else None
+            company = get_or_create_company_by_domain(db, domain, company_name or name)
+        
+        user = UserDB(email=email, name=name, role=role, company_id=company.id if company else None)
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+        serialized_user = serialize_user(user, company)
+        db.close()
+        
+        return {
+            "success": True,
+            "user": serialized_user
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating user: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to create user: {str(e)}")
+
+# -----------------------------
+# Company Endpoints
+# -----------------------------
+
+@app.get("/companies")
+async def get_companies(company_id: Optional[str] = None, slug: Optional[str] = None, domain: Optional[str] = None):
+    """Get company records"""
+    try:
+        db = SessionLocal()
+        query = db.query(CompanyDB)
+        if company_id:
+            query = query.filter(CompanyDB.id == company_id)
+        if slug:
+            query = query.filter(CompanyDB.slug == slug)
+        if domain:
+            query = query.filter(func.lower(CompanyDB.primary_domain) == domain.lower())
+        companies = query.all()
+        db.close()
+        return {
+            "success": True,
+            "companies": [serialize_company(company) for company in companies]
+        }
+    except Exception as e:
+        print(f"Error getting companies: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get companies: {str(e)}")
+
+@app.post("/companies")
+async def create_company(
+    name: str = Form(...),
+    slug: Optional[str] = Form(None),
+    primary_domain: Optional[str] = Form(None),
+    plan: Optional[str] = Form("trial"),
+    status: Optional[str] = Form("active")
+):
+    """Create a company"""
+    try:
+        db = SessionLocal()
+        slug_base = slugify(slug or name)
+        unique_slug = generate_unique_slug(db, slug_base)
+        normalized_domain = primary_domain.lower() if primary_domain else None
+        if normalized_domain:
+            existing_domain = db.query(CompanyDB).filter(func.lower(CompanyDB.primary_domain) == normalized_domain).first()
+            if existing_domain:
+                db.close()
+                raise HTTPException(status_code=400, detail="A company with this domain already exists")
+        company = CompanyDB(
+            name=name,
+            slug=unique_slug,
+            primary_domain=normalized_domain,
+            plan=plan,
+            status=status
+        )
+        db.add(company)
+        db.commit()
+        db.refresh(company)
+        payload = serialize_company(company)
+        db.close()
+        return {"success": True, "company": payload}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating company: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to create company: {str(e)}")
+
+# -----------------------------
+# Notification Endpoints
+# -----------------------------
+# -----------------------------
+# Notification Endpoints
+# -----------------------------
+
+@app.get("/notifications")
+async def get_notifications(user_id: Optional[str] = Query(None), unread_only: bool = Query(False)):
+    """Get notifications for a user"""
+    try:
+        db = SessionLocal()
+        query = db.query(NotificationDB)
+        
+        if user_id:
+            query = query.filter(NotificationDB.user_id == user_id)
+        
+        if unread_only:
+            query = query.filter(NotificationDB.is_read == False)
+        
+        notifications = query.order_by(NotificationDB.created_at.desc()).limit(50).all()
+        db.close()
+        
+        return {
+            "success": True,
+            "notifications": [
+                {
+                    "id": n.id,
+                    "type": n.type,
+                    "title": n.title,
+                    "message": n.message,
+                    "related_candidate_id": n.related_candidate_id,
+                    "related_job_id": n.related_job_id,
+                    "related_result_id": n.related_result_id,
+                    "is_read": n.is_read,
+                    "created_at": n.created_at.isoformat() if n.created_at else None
+                }
+                for n in notifications
+            ]
+        }
+    except Exception as e:
+        print(f"Error getting notifications: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get notifications: {str(e)}")
+
+@app.post("/notifications")
+async def create_notification(
+    user_id: str = Form(...),
+    type: str = Form(...),
+    title: str = Form(...),
+    message: Optional[str] = Form(None),
+    related_candidate_id: Optional[str] = Form(None),
+    related_job_id: Optional[str] = Form(None),
+    related_result_id: Optional[str] = Form(None)
+):
+    """Create a notification"""
+    try:
+        db = SessionLocal()
+        notification = NotificationDB(
+            user_id=user_id,
+            type=type,
+            title=title,
+            message=message,
+            related_candidate_id=related_candidate_id,
+            related_job_id=related_job_id,
+            related_result_id=related_result_id
+        )
+        db.add(notification)
+        db.commit()
+        db.refresh(notification)
+        notification_id = notification.id
+        db.close()
+        
+        return {
+            "success": True,
+            "notification": {
+                "id": notification_id,
+                "type": type,
+                "title": title
+            }
+        }
+    except Exception as e:
+        print(f"Error creating notification: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to create notification: {str(e)}")
+
+@app.put("/notifications/{notification_id}/read")
+async def mark_notification_read(notification_id: str):
+    """Mark a notification as read"""
+    try:
+        db = SessionLocal()
+        notification = db.query(NotificationDB).filter(NotificationDB.id == notification_id).first()
+        if not notification:
+            db.close()
+            raise HTTPException(status_code=404, detail="Notification not found")
+        
+        notification.is_read = True
+        db.commit()
+        db.close()
+        
+        return {"success": True, "message": "Notification marked as read"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error marking notification as read: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to mark notification as read: {str(e)}")
+
+@app.put("/notifications/read-all")
+async def mark_all_notifications_read(user_id: str = Form(...)):
+    """Mark all notifications as read for a user"""
+    try:
+        db = SessionLocal()
+        notifications = db.query(NotificationDB).filter(
+            NotificationDB.user_id == user_id,
+            NotificationDB.is_read == False
+        ).all()
+        
+        for notification in notifications:
+            notification.is_read = True
+        
+        db.commit()
+        db.close()
+        
+        return {"success": True, "message": f"Marked {len(notifications)} notifications as read"}
+    except Exception as e:
+        print(f"Error marking all notifications as read: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to mark all notifications as read: {str(e)}")
+
+# -----------------------------
+# Comment Endpoints
+# -----------------------------
+
+@app.get("/comments")
+async def get_comments(
+    candidate_id: Optional[str] = Query(None),
+    job_id: Optional[str] = Query(None),
+    result_id: Optional[str] = Query(None)
+):
+    """Get comments"""
+    try:
+        db = SessionLocal()
+        query = db.query(CommentDB)
+        
+        if candidate_id:
+            query = query.filter(CommentDB.candidate_id == candidate_id)
+        if job_id:
+            query = query.filter(CommentDB.job_id == job_id)
+        if result_id:
+            query = query.filter(CommentDB.result_id == result_id)
+        
+        comments = query.order_by(CommentDB.created_at.desc()).all()
+        db.close()
+        
+        # Get user names for comments
+        db = SessionLocal()
+        comments_with_users = []
+        for comment in comments:
+            user = db.query(UserDB).filter(UserDB.id == comment.user_id).first()
+            comments_with_users.append({
+                "id": comment.id,
+                "user_id": comment.user_id,
+                "user_name": user.name if user else "Unknown",
+                "user_email": user.email if user else "",
+                "candidate_id": comment.candidate_id,
+                "job_id": comment.job_id,
+                "result_id": comment.result_id,
+                "content": comment.content,
+                "created_at": comment.created_at.isoformat() if comment.created_at else None,
+                "updated_at": comment.updated_at.isoformat() if comment.updated_at else None
+            })
+        db.close()
+        
+        return {
+            "success": True,
+            "comments": comments_with_users
+        }
+    except Exception as e:
+        print(f"Error getting comments: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get comments: {str(e)}")
+
+@app.post("/comments")
+async def create_comment(
+    user_id: str = Form(...),
+    content: str = Form(...),
+    candidate_id: Optional[str] = Form(None),
+    job_id: Optional[str] = Form(None),
+    result_id: Optional[str] = Form(None)
+):
+    """Create a comment"""
+    try:
+        db = SessionLocal()
+        comment = CommentDB(
+            user_id=user_id,
+            content=content,
+            candidate_id=candidate_id,
+            job_id=job_id,
+            result_id=result_id
+        )
+        db.add(comment)
+        db.commit()
+        db.refresh(comment)
+        comment_id = comment.id
+        db.close()
+        
+        return {
+            "success": True,
+            "comment": {
+                "id": comment_id,
+                "content": content
+            }
+        }
+    except Exception as e:
+        print(f"Error creating comment: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to create comment: {str(e)}")
+
+@app.put("/comments/{comment_id}")
+async def update_comment(comment_id: str, content: str = Form(...)):
+    """Update a comment"""
+    try:
+        db = SessionLocal()
+        comment = db.query(CommentDB).filter(CommentDB.id == comment_id).first()
+        if not comment:
+            db.close()
+            raise HTTPException(status_code=404, detail="Comment not found")
+        
+        comment.content = content
+        comment.updated_at = func.now()
+        db.commit()
+        db.close()
+        
+        return {"success": True, "message": "Comment updated"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating comment: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to update comment: {str(e)}")
+
+@app.delete("/comments/{comment_id}")
+async def delete_comment(comment_id: str):
+    """Delete a comment"""
+    try:
+        db = SessionLocal()
+        comment = db.query(CommentDB).filter(CommentDB.id == comment_id).first()
+        if not comment:
+            db.close()
+            raise HTTPException(status_code=404, detail="Comment not found")
+        
+        db.delete(comment)
+        db.commit()
+        db.close()
+        
+        return {"success": True, "message": "Comment deleted"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting comment: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete comment: {str(e)}")
+
+# -----------------------------
+# Approval Endpoints
+# -----------------------------
+
+@app.get("/approvals")
+async def get_approvals(
+    candidate_id: Optional[str] = Query(None),
+    job_id: Optional[str] = Query(None),
+    result_id: Optional[str] = Query(None),
+    approval_type: Optional[str] = Query(None),
+    user_id: Optional[str] = Query(None)
+):
+    """Get approvals"""
+    try:
+        db = SessionLocal()
+        query = db.query(ApprovalDB)
+        
+        if candidate_id:
+            query = query.filter(ApprovalDB.candidate_id == candidate_id)
+        if job_id:
+            query = query.filter(ApprovalDB.job_id == job_id)
+        if result_id:
+            query = query.filter(ApprovalDB.result_id == result_id)
+        if approval_type:
+            query = query.filter(ApprovalDB.approval_type == approval_type)
+        if user_id:
+            query = query.filter(ApprovalDB.user_id == user_id)
+        
+        approvals = query.order_by(ApprovalDB.created_at.desc()).all()
+        
+        # Get user names for approvals
+        approvals_with_users = []
+        for approval in approvals:
+            user = db.query(UserDB).filter(UserDB.id == approval.user_id).first()
+            approvals_with_users.append({
+                "id": approval.id,
+                "user_id": approval.user_id,
+                "user_name": user.name if user else "Unknown",
+                "user_email": user.email if user else "",
+                "candidate_id": approval.candidate_id,
+                "job_id": approval.job_id,
+                "result_id": approval.result_id,
+                "approval_type": approval.approval_type,
+                "status": approval.status,
+                "comment": approval.comment,
+                "created_at": approval.created_at.isoformat() if approval.created_at else None,
+                "updated_at": approval.updated_at.isoformat() if approval.updated_at else None
+            })
+        db.close()
+        
+        return {
+            "success": True,
+            "approvals": approvals_with_users
+        }
+    except Exception as e:
+        print(f"Error getting approvals: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get approvals: {str(e)}")
+
+@app.post("/approvals")
+async def create_approval(
+    user_id: str = Form(...),
+    approval_type: str = Form(...),
+    status: str = Form(...),
+    candidate_id: Optional[str] = Form(None),
+    job_id: Optional[str] = Form(None),
+    result_id: Optional[str] = Form(None),
+    comment: Optional[str] = Form(None)
+):
+    """Create or update an approval"""
+    try:
+        db = SessionLocal()
+        
+        # Validate status
+        if status not in ['approved', 'rejected', 'pending']:
+            db.close()
+            raise HTTPException(status_code=400, detail="Status must be 'approved', 'rejected', or 'pending'")
+        
+        # Check if approval already exists
+        existing = db.query(ApprovalDB).filter(
+            ApprovalDB.user_id == user_id,
+            ApprovalDB.candidate_id == candidate_id,
+            ApprovalDB.job_id == job_id,
+            ApprovalDB.approval_type == approval_type
+        ).first()
+        
+        if existing:
+            # Update existing approval
+            existing.status = status
+            if comment:
+                existing.comment = comment
+            existing.updated_at = func.now()
+            db.commit()
+            db.refresh(existing)
+            approval_id = existing.id
+        else:
+            # Create new approval
+            approval = ApprovalDB(
+                user_id=user_id,
+                candidate_id=candidate_id,
+                job_id=job_id,
+                result_id=result_id,
+                approval_type=approval_type,
+                status=status,
+                comment=comment
+            )
+            db.add(approval)
+            db.commit()
+            db.refresh(approval)
+            approval_id = approval.id
+        
+        db.close()
+        
+        return {
+            "success": True,
+            "approval": {
+                "id": approval_id,
+                "status": status
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating approval: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to create approval: {str(e)}")
+
+@app.put("/approvals/{approval_id}")
+async def update_approval(
+    approval_id: str,
+    status: Optional[str] = Form(None),
+    comment: Optional[str] = Form(None)
+):
+    """Update an approval"""
+    try:
+        db = SessionLocal()
+        approval = db.query(ApprovalDB).filter(ApprovalDB.id == approval_id).first()
+        
+        if not approval:
+            db.close()
+            raise HTTPException(status_code=404, detail="Approval not found")
+        
+        if status:
+            if status not in ['approved', 'rejected', 'pending']:
+                db.close()
+                raise HTTPException(status_code=400, detail="Status must be 'approved', 'rejected', or 'pending'")
+            approval.status = status
+        
+        if comment is not None:
+            approval.comment = comment
+        
+        approval.updated_at = func.now()
+        db.commit()
+        db.refresh(approval)
+        db.close()
+        
+        return {
+            "success": True,
+            "approval": {
+                "id": approval.id,
+                "status": approval.status,
+                "comment": approval.comment
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating approval: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to update approval: {str(e)}")
+
+@app.delete("/approvals/{approval_id}")
+async def delete_approval(approval_id: str):
+    """Delete an approval"""
+    try:
+        db = SessionLocal()
+        approval = db.query(ApprovalDB).filter(ApprovalDB.id == approval_id).first()
+        
+        if not approval:
+            db.close()
+            raise HTTPException(status_code=404, detail="Approval not found")
+        
+        db.delete(approval)
+        db.commit()
+        db.close()
+        
+        return {"success": True, "message": "Approval deleted successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting approval: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete approval: {str(e)}")
+
+# -----------------------------
+# Job Watcher Endpoints
+# -----------------------------
+
+@app.get("/job-watchers/{job_id}")
+async def get_job_watchers(job_id: str):
+    """Get users watching a job"""
+    try:
+        db = SessionLocal()
+        watchers = db.query(JobWatcherDB).filter(JobWatcherDB.job_id == job_id).all()
+        
+        user_ids = [w.user_id for w in watchers]
+        users = db.query(UserDB).filter(UserDB.id.in_(user_ids)).all() if user_ids else []
+        db.close()
+        
+        return {
+            "success": True,
+            "watchers": [
+                {
+                    "id": u.id,
+                    "email": u.email,
+                    "name": u.name,
+                    "role": u.role
+                }
+                for u in users
+            ]
+        }
+    except Exception as e:
+        print(f"Error getting job watchers: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get job watchers: {str(e)}")
+
+@app.post("/job-watchers")
+async def add_job_watcher(job_id: str = Form(...), user_id: str = Form(...)):
+    """Add a user as a watcher for a job"""
+    try:
+        db = SessionLocal()
+        # Check if already watching
+        existing = db.query(JobWatcherDB).filter(
+            JobWatcherDB.job_id == job_id,
+            JobWatcherDB.user_id == user_id
+        ).first()
+        
+        if existing:
+            db.close()
+            return {"success": True, "message": "User already watching this job"}
+        
+        watcher = JobWatcherDB(job_id=job_id, user_id=user_id)
+        db.add(watcher)
+        db.commit()
+        db.close()
+        
+        return {"success": True, "message": "User added as watcher"}
+    except Exception as e:
+        print(f"Error adding job watcher: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to add job watcher: {str(e)}")
+
+@app.delete("/job-watchers/{job_id}/{user_id}")
+async def remove_job_watcher(job_id: str, user_id: str):
+    """Remove a user as a watcher for a job"""
+    try:
+        db = SessionLocal()
+        watcher = db.query(JobWatcherDB).filter(
+            JobWatcherDB.job_id == job_id,
+            JobWatcherDB.user_id == user_id
+        ).first()
+        
+        if watcher:
+            db.delete(watcher)
+            db.commit()
+        
+        db.close()
+        return {"success": True, "message": "Watcher removed"}
+    except Exception as e:
+        print(f"Error removing job watcher: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to remove job watcher: {str(e)}")
+
+# -----------------------------
+# Candidate Watcher Endpoints
+# -----------------------------
+
+@app.get("/candidate-watchers/{candidate_id}")
+async def get_candidate_watchers(candidate_id: str):
+    """Get users watching a candidate"""
+    try:
+        db = SessionLocal()
+        watchers = db.query(CandidateWatcherDB).filter(CandidateWatcherDB.candidate_id == candidate_id).all()
+        
+        user_ids = [w.user_id for w in watchers]
+        users = db.query(UserDB).filter(UserDB.id.in_(user_ids)).all() if user_ids else []
+        db.close()
+        
+        return {
+            "success": True,
+            "watchers": [
+                {
+                    "id": u.id,
+                    "email": u.email,
+                    "name": u.name,
+                    "role": u.role
+                }
+                for u in users
+            ]
+        }
+    except Exception as e:
+        print(f"Error getting candidate watchers: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get candidate watchers: {str(e)}")
+
+@app.post("/candidate-watchers")
+async def add_candidate_watcher(candidate_id: str = Form(...), user_id: str = Form(...)):
+    """Add a user as a watcher for a candidate"""
+    try:
+        db = SessionLocal()
+        # Check if already watching
+        existing = db.query(CandidateWatcherDB).filter(
+            CandidateWatcherDB.candidate_id == candidate_id,
+            CandidateWatcherDB.user_id == user_id
+        ).first()
+        
+        if existing:
+            db.close()
+            return {"success": True, "message": "User already watching this candidate"}
+        
+        watcher = CandidateWatcherDB(candidate_id=candidate_id, user_id=user_id)
+        db.add(watcher)
+        db.commit()
+        db.close()
+        
+        return {"success": True, "message": "User added as watcher"}
+    except Exception as e:
+        print(f"Error adding candidate watcher: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to add candidate watcher: {str(e)}")
+
+@app.delete("/candidate-watchers/{candidate_id}/{user_id}")
+async def remove_candidate_watcher(candidate_id: str, user_id: str):
+    """Remove a user as a watcher for a candidate"""
+    try:
+        db = SessionLocal()
+        watcher = db.query(CandidateWatcherDB).filter(
+            CandidateWatcherDB.candidate_id == candidate_id,
+            CandidateWatcherDB.user_id == user_id
+        ).first()
+        
+        if watcher:
+            db.delete(watcher)
+            db.commit()
+        
+        db.close()
+        return {"success": True, "message": "Watcher removed"}
+    except Exception as e:
+        print(f"Error removing candidate watcher: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to remove candidate watcher: {str(e)}")
+
+# -----------------------------
+# Evaluation Template Endpoints
+# -----------------------------
+
+@app.get("/evaluation-templates")
+async def get_evaluation_templates():
+    """Get all evaluation templates"""
+    try:
+        db = SessionLocal()
+        templates = db.query(EvaluationTemplateDB).order_by(EvaluationTemplateDB.created_at.desc()).all()
+        db.close()
+        
+        return {
+            "success": True,
+            "templates": [
+                {
+                    "id": t.id,
+                    "name": t.name,
+                    "description": t.description,
+                    "job_id": t.job_id,
+                    "selected_persona_ids": t.selected_persona_ids.split(",") if t.selected_persona_ids else [],
+                    "selected_actions": t.selected_actions.split(",") if t.selected_actions else [],
+                    "company_note": t.company_note,
+                    "use_candidate_company_note": t.use_candidate_company_note,
+                    "created_by": t.created_by,
+                    "created_at": t.created_at.isoformat() if t.created_at else None,
+                    "updated_at": t.updated_at.isoformat() if t.updated_at else None
+                }
+                for t in templates
+            ]
+        }
+    except Exception as e:
+        print(f"Error getting evaluation templates: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get evaluation templates: {str(e)}")
+
+@app.post("/evaluation-templates")
+async def create_evaluation_template(
+    name: str = Form(...),
+    description: Optional[str] = Form(None),
+    job_id: Optional[str] = Form(None),
+    selected_persona_ids: str = Form(...),  # Comma-separated
+    selected_actions: str = Form(...),  # Comma-separated
+    company_note: Optional[str] = Form(None),
+    use_candidate_company_note: bool = Form(False),
+    created_by: Optional[str] = Form(None)
+):
+    """Create a new evaluation template"""
+    try:
+        db = SessionLocal()
+        
+        template = EvaluationTemplateDB(
+            name=name,
+            description=description,
+            job_id=job_id,
+            selected_persona_ids=selected_persona_ids,
+            selected_actions=selected_actions,
+            company_note=company_note,
+            use_candidate_company_note=use_candidate_company_note,
+            created_by=created_by
+        )
+        
+        db.add(template)
+        db.commit()
+        db.refresh(template)
+        db.close()
+        
+        return {
+            "success": True,
+            "template": {
+                "id": template.id,
+                "name": template.name,
+                "description": template.description,
+                "job_id": template.job_id,
+                "selected_persona_ids": template.selected_persona_ids.split(",") if template.selected_persona_ids else [],
+                "selected_actions": template.selected_actions.split(",") if template.selected_actions else [],
+                "company_note": template.company_note,
+                "use_candidate_company_note": template.use_candidate_company_note,
+                "created_by": template.created_by,
+                "created_at": template.created_at.isoformat() if template.created_at else None
+            },
+            "message": "Template created successfully"
+        }
+    except Exception as e:
+        print(f"Error creating evaluation template: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to create evaluation template: {str(e)}")
+
+@app.delete("/evaluation-templates/{template_id}")
+async def delete_evaluation_template(template_id: str):
+    """Delete an evaluation template"""
+    try:
+        db = SessionLocal()
+        template = db.query(EvaluationTemplateDB).filter(EvaluationTemplateDB.id == template_id).first()
+        
+        if not template:
+            db.close()
+            raise HTTPException(status_code=404, detail="Template not found")
+        
+        db.delete(template)
+        db.commit()
+        db.close()
+        
+        return {"success": True, "message": "Template deleted successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting evaluation template: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete evaluation template: {str(e)}")
+
+# -----------------------------
+# Pydantic Models
+# -----------------------------
+
+class CandidateSummaryRequest(BaseModel):
+    candidate_name: str
+    evaluations: str
+
+# -----------------------------
+# AI Summary Generation
+# -----------------------------
+
+@app.post("/generate-candidate-summary")
+async def generate_candidate_summary(request: CandidateSummaryRequest):
+    """Generate an AI summary of a candidate based on all evaluations"""
+    try:
+        from config import OPENAI_MODEL_EVALUATION, OPENAI_MAX_TOKENS_EVALUATION, OPENAI_TEMPERATURE_EVALUATION
+        
+        candidate_name = request.candidate_name
+        evaluations_text = request.evaluations
+
+        system_prompt = """Je bent een expert HR-analist. Je taak is om een beknopte, professionele samenvatting te maken van een kandidaat op basis van meerdere evaluaties.
+
+Maak een samenvatting die:
+- De belangrijkste sterke punten benadrukt
+- Belangrijke aandachtspunten noemt
+- Een duidelijk beeld geeft van de geschiktheid
+- Maximaal 3-4 paragrafen lang is
+- Professioneel en objectief is
+
+Schrijf in het Nederlands."""
+
+        user_prompt = f"""Hieronder staan alle evaluaties voor kandidaat {candidate_name}:
+
+{evaluations_text}
+
+Maak een beknopte, professionele samenvatting van deze kandidaat op basis van alle evaluaties."""
+
+        openai_result = call_openai_safe([
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ], max_tokens=500, temperature=0.3, model=OPENAI_MODEL_EVALUATION)
+
+        if not openai_result["success"]:
+            raise HTTPException(status_code=500, detail=f"AI summary generation failed: {openai_result.get('error', 'Unknown error')}")
+
+        summary_text = openai_result["result"].choices[0].message.content
+
+        return {
+            "success": True,
+            "summary": summary_text
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error generating candidate summary: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate summary: {str(e)}")
+
+# -----------------------------
+# AI-Powered Candidate Matching
+# -----------------------------
+
+@app.post("/match-candidates")
+async def match_candidates_to_job(job_id: str = Form(...), limit: Optional[int] = Form(10)):
+    """AI-powered matching of candidates to a job posting"""
+    try:
+        db = SessionLocal()
+        
+        # Get job posting
+        job = db.query(JobPostingDB).filter(JobPostingDB.id == job_id).first()
+        if not job:
+            db.close()
+            raise HTTPException(status_code=404, detail="Job posting not found")
+        
+        # Get all candidates (or candidates related to this job)
+        candidates = db.query(CandidateDB).filter(
+            or_(
+                CandidateDB.job_id == job_id,
+                CandidateDB.preferential_job_ids.like(f"%{job_id}%")
+            )
+        ).all()
+        
+        if not candidates:
+            db.close()
+            return {
+                "success": True,
+                "matches": [],
+                "message": "No candidates found for this job"
+            }
+        
+        # Prepare job information
+        job_info = f"""
+VACATURE: {job.title}
+BEDRIJF: {job.company}
+LOCATIE: {job.location}
+SALARIS: {job.salary_range}
+
+BESCHRIJVING:
+{truncate_text_safely(job.description, 1500)}
+
+EISEN:
+{truncate_text_safely(job.requirements, 1500)}
+"""
+        
+        # Match each candidate using AI
+        matches = []
+        matching_tasks = []
+        
+        for candidate in candidates:
+            # Prepare candidate information
+            candidate_info = f"""
+KANDIDAAT: {candidate.name}
+EMAIL: {candidate.email or 'Niet opgegeven'}
+ERVARING: {candidate.experience_years or 'Niet opgegeven'} jaar
+VAARDIGHEDEN: {candidate.skills or 'Niet opgegeven'}
+OPLEIDING: {candidate.education or 'Niet opgegeven'}
+
+CV:
+{truncate_text_safely(candidate.resume_text or '', 1500)}
+
+MOTIVATIEBRIEF:
+{truncate_text_safely(candidate.motivational_letter or '', 1000)}
+"""
+            
+            if candidate.company_note:
+                candidate_info += f"\nBEDRIJFSNOTITIE (van leverancier):\n{truncate_text_safely(candidate.company_note, 500)}\n"
+            
+            # Get evaluation scores if available
+            evaluations = db.query(EvaluationResultDB).filter(
+                EvaluationResultDB.candidate_id == candidate.id,
+                EvaluationResultDB.job_id == job_id,
+                EvaluationResultDB.result_type == 'evaluation'
+            ).all()
+            
+            evaluation_scores = []
+            if evaluations:
+                for eval in evaluations:
+                    if eval.result_data:
+                        try:
+                            import json
+                            result_data = json.loads(eval.result_data) if isinstance(eval.result_data, str) else eval.result_data
+                            if isinstance(result_data, dict):
+                                if 'combined_score' in result_data:
+                                    evaluation_scores.append(result_data['combined_score'])
+                                elif 'evaluations' in result_data:
+                                    for eval_data in result_data['evaluations'].values():
+                                        if isinstance(eval_data, dict) and 'score' in eval_data:
+                                            evaluation_scores.append(eval_data['score'])
+                        except Exception:
+                            pass
+            
+            avg_score = sum(evaluation_scores) / len(evaluation_scores) if evaluation_scores else None
+            
+            # Create matching prompt
+            system_prompt = """Je bent een expert HR-matcher. Je taak is om te beoordelen hoe goed een kandidaat matcht met een vacature.
+
+Geef een match score van 1-10, waarbij:
+- 1-3: Zeer slechte match (kandidaat voldoet niet aan basisvereisten)
+- 4-5: Zwakke match (kandidaat voldoet aan enkele vereisten maar mist belangrijke aspecten)
+- 6-7: Goede match (kandidaat voldoet aan de meeste vereisten)
+- 8-9: Uitstekende match (kandidaat voldoet aan vrijwel alle vereisten en heeft extra kwaliteiten)
+- 10: Perfecte match (kandidaat is ideaal voor deze functie)
+
+Geef ook een korte motivatie (2-3 zinnen) waarom deze score is gegeven.
+
+Antwoord in JSON formaat:
+{
+  "match_score": <score 1-10>,
+  "reasoning": "<korte motivatie in het Nederlands>",
+  "strengths": ["<sterk punt 1>", "<sterk punt 2>", ...],
+  "concerns": ["<aandachtspunt 1>", "<aandachtspunt 2>", ...]
+}"""
+
+            user_prompt = f"""VACATURE:
+{job_info}
+
+KANDIDAAT:
+{candidate_info}
+
+{f"BESTAANDE EVALUATIES: Gemiddelde score: {avg_score:.1f}/10" if avg_score else ""}
+
+Beoordeel hoe goed deze kandidaat matcht met deze vacature. Geef een match score en motivatie."""
+
+            matching_tasks.append({
+                "candidate": candidate,
+                "prompt": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                "avg_score": avg_score
+            })
+        
+        # Process matches in parallel (but limit concurrent requests)
+        from config import OPENAI_MODEL_EVALUATION, OPENAI_MAX_TOKENS_EVALUATION, OPENAI_TEMPERATURE_EVALUATION
+        
+        async def process_match(task):
+            try:
+                result = await call_openai_safe_async(
+                    task["prompt"],
+                    max_tokens=800,
+                    temperature=0.2,
+                    model=OPENAI_MODEL_EVALUATION
+                )
+                
+                if result["success"]:
+                    import json
+                    import re
+                    content = result["result"].choices[0].message.content
+                    
+                    # Try to extract JSON from response
+                    json_match = re.search(r'\{[^{}]*"match_score"[^{}]*\}', content, re.DOTALL)
+                    if json_match:
+                        match_data = json.loads(json_match.group())
+                    else:
+                        # Fallback: try to parse the whole content
+                        match_data = json.loads(content)
+                    
+                    return {
+                        "candidate_id": task["candidate"].id,
+                        "candidate_name": task["candidate"].name,
+                        "match_score": match_data.get("match_score", 5.0),
+                        "reasoning": match_data.get("reasoning", "Geen motivatie beschikbaar"),
+                        "strengths": match_data.get("strengths", []),
+                        "concerns": match_data.get("concerns", []),
+                        "evaluation_score": task["avg_score"]
+                    }
+                else:
+                    return {
+                        "candidate_id": task["candidate"].id,
+                        "candidate_name": task["candidate"].name,
+                        "match_score": task["avg_score"] or 5.0,
+                        "reasoning": "AI matching niet beschikbaar, gebruikt evaluatie score",
+                        "strengths": [],
+                        "concerns": [],
+                        "evaluation_score": task["avg_score"]
+                    }
+            except Exception as e:
+                print(f"Error matching candidate {task['candidate'].id}: {str(e)}")
+                return {
+                    "candidate_id": task["candidate"].id,
+                    "candidate_name": task["candidate"].name,
+                    "match_score": task["avg_score"] or 5.0,
+                    "reasoning": f"Fout bij matching: {str(e)}",
+                    "strengths": [],
+                    "concerns": [],
+                    "evaluation_score": task["avg_score"]
+                }
+        
+        # Process matches with limited concurrency (5 at a time)
+        semaphore = asyncio.Semaphore(5)
+        async def process_with_semaphore(task):
+            async with semaphore:
+                return await process_match(task)
+        
+        match_results = await asyncio.gather(*[process_with_semaphore(task) for task in matching_tasks])
+        
+        # Sort by match score (descending)
+        match_results.sort(key=lambda x: x["match_score"], reverse=True)
+        
+        # Apply limit
+        if limit:
+            match_results = match_results[:limit]
+        
+        db.close()
+        
+        return {
+            "success": True,
+            "job": {
+                "id": job.id,
+                "title": job.title,
+                "company": job.company
+            },
+            "matches": match_results,
+            "total_candidates": len(candidates),
+            "matched": len(match_results)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error matching candidates: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to match candidates: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
