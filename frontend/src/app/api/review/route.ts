@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+const BACKEND_URL = process.env.BACKEND_URL || process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+
 export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData();
@@ -42,22 +44,38 @@ export async function POST(request: NextRequest) {
       uploadFormData.append('company_note', companyNote);
     }
 
-    const uploadResponse = await fetch('http://localhost:8000/upload-resume', {
+    const uploadResponse = await fetch(`${BACKEND_URL}/upload-resume`, {
       method: 'POST',
       body: uploadFormData,
     });
 
     if (!uploadResponse.ok) {
-      const errorText = await uploadResponse.text();
-      console.error('Upload error:', errorText);
+      let errorDetail = 'File upload failed';
+      try {
+        const errorJson = await uploadResponse.json();
+        errorDetail = errorJson.detail || errorJson.error || errorDetail;
+      } catch {
+        const errorText = await uploadResponse.text();
+        errorDetail = errorText || errorDetail;
+      }
+      console.error('Upload error:', errorDetail);
       return NextResponse.json(
-        { error: 'File upload failed' },
+        { error: errorDetail, errorDetail: errorDetail },
         { status: uploadResponse.status }
       );
     }
 
     const uploadResult = await uploadResponse.json();
     const candidateId = uploadResult.candidate_id;
+    
+    if (!candidateId) {
+      console.error('Upload response missing candidate_id:', uploadResult);
+      return NextResponse.json(
+        { error: 'Upload succeeded but no candidate_id returned', errorDetail: 'Backend response missing candidate_id' },
+        { status: 500 }
+      );
+    }
+    
     const azureUsed = uploadResult.azure_used || false;
     const extractionMethod = uploadResult.extraction_method || 'Unknown';
 
@@ -83,7 +101,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const evalResponse = await fetch('http://localhost:8000/evaluate-candidate', {
+    const evalResponse = await fetch(`${BACKEND_URL}/evaluate-candidate`, {
       method: 'POST',
       body: evalFormData,
     });
@@ -91,11 +109,17 @@ export async function POST(request: NextRequest) {
     if (!evalResponse.ok) {
       let errorDetail = 'Evaluation failed';
       try {
-        const errorJson = await evalResponse.json();
-        errorDetail = errorJson.detail || errorJson.error || errorDetail;
-      } catch {
-        const errorText = await evalResponse.text();
-        errorDetail = errorText || errorDetail;
+        const contentType = evalResponse.headers.get('content-type');
+        if (contentType && contentType.includes('application/json')) {
+          const errorJson = await evalResponse.json();
+          errorDetail = errorJson.detail || errorJson.error || errorDetail;
+        } else {
+          const errorText = await evalResponse.text();
+          errorDetail = errorText || errorDetail;
+        }
+      } catch (parseError) {
+        console.error('Error parsing error response:', parseError);
+        errorDetail = `Backend error: ${evalResponse.status} ${evalResponse.statusText}`;
       }
       console.error('Evaluation error:', errorDetail);
       return NextResponse.json(
@@ -115,19 +139,24 @@ export async function POST(request: NextRequest) {
         azure_used: azureUsed,
         extraction_method: extractionMethod,
         combined_analysis: evalResult.combined_analysis,
-        combined_recommendation: evalResult.combined_recommendation
+        combined_recommendation: evalResult.combined_recommendation,
+        combined_score: evalResult.combined_score,
+        full_prompt: evalResult.full_prompt
       });
     } else {
+      const errorMsg = evalResult.error || 'Evaluation failed - no evaluations returned';
+      console.error('Evaluation result missing data:', evalResult);
       return NextResponse.json(
-        { error: evalResult.error || 'Evaluation failed', errorDetail: evalResult.error || 'Unknown error' },
+        { error: errorMsg, errorDetail: errorMsg },
         { status: 500 }
       );
     }
 
-  } catch (error) {
+  } catch (error: any) {
     console.error('Error in /api/review:', error);
+    const errorMessage = error?.message || 'Internal server error';
     return NextResponse.json(
-      { error: 'Internal server error' },
+      { error: errorMessage, errorDetail: errorMessage },
       { status: 500 }
     );
   }
