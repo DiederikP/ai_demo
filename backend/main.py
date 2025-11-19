@@ -34,6 +34,12 @@ try:
 except ImportError:
     FITZ_AVAILABLE = False
     print("Warning: PyMuPDF (fitz) not available. PDF parsing will be limited.")
+try:
+    from PyPDF2 import PdfReader
+    PYPDF2_AVAILABLE = True
+except ImportError:
+    PYPDF2_AVAILABLE = False
+    print("Warning: PyPDF2 not available. PDF parsing will be limited.")
 
 # Import centralized configuration
 # Use direct import - this is the most reliable approach
@@ -123,8 +129,13 @@ def extract_text_from_file(file_content: bytes, filename: str) -> Dict[str, any]
                         result = extract_text_from_pdf_pymupdf(file_content)
                         print(f"PyMuPDF success: extracted {len(result)} characters")
                         return {"text": result, "extraction_method": "PyMuPDF", "azure_used": False}
+                    elif method == 'pypdf2':
+                        print("Trying PyPDF2 extraction...")
+                        result = extract_text_from_pdf_pypdf2(file_content)
+                        print(f"PyPDF2 success: extracted {len(result)} characters")
+                        return {"text": result, "extraction_method": "PyPDF2", "azure_used": False}
                     elif method == 'azure' and AZURE_ENABLED:
-                        print(f"PyMuPDF not available or failed, trying Azure Document Intelligence...")
+                        print(f"Trying Azure Document Intelligence...")
                         result = extract_text_from_pdf_azure(file_content)
                         print(f"Azure success: extracted {len(result)} characters")
                         return {"text": result, "extraction_method": "Azure Document Intelligence", "azure_used": True}
@@ -196,6 +207,28 @@ def extract_text_from_pdf_pymupdf(pdf_content: bytes) -> str:
         
     except Exception as e:
         raise ValueError(f"PyMuPDF extraction error: {str(e)}")
+
+
+def extract_text_from_pdf_pypdf2(pdf_content: bytes) -> str:
+    """Extract text from PDF using PyPDF2"""
+    try:
+        if not PYPDF2_AVAILABLE:
+            raise ImportError("PyPDF2 not available")
+        
+        pdf_reader = PdfReader(BytesIO(pdf_content))
+        text = ""
+        
+        # Extract text from all pages
+        for page in pdf_reader.pages:
+            text += page.extract_text()
+        
+        if not text.strip():
+            raise ValueError("No text extracted from PDF")
+        
+        return text.strip()
+        
+    except Exception as e:
+        raise ValueError(f"PyPDF2 extraction error: {str(e)}")
 
 
 def extract_text_from_pdf_azure(pdf_content: bytes) -> str:

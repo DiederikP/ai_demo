@@ -34,9 +34,10 @@ MAX_JOB_DESC_CHARS = 1000  # Reduced from 2000 for smaller model
 MAX_COMPANY_NOTE_CHARS = 500  # Limit for company notes
 
 # PDF Extraction Priority (in order of preference)
-# Options: 'pymupdf', 'azure', 'ai'
-# Use PyMuPDF first (most reliable), then Azure, then AI as fallback
-PDF_EXTRACTION_PRIORITY = ['pymupdf', 'azure', 'ai']
+# Options: 'pymupdf', 'azure', 'ai', 'pypdf2'
+# Note: PyMuPDF removed from requirements due to build issues on Render
+# Use Azure first (most reliable), then PyPDF2, then AI as fallback
+PDF_EXTRACTION_PRIORITY = ['azure', 'pypdf2', 'ai']
 
 # Scoring System Configuration
 SCORE_MIN = 1.0  # Minimum score value
