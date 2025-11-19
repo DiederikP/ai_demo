@@ -26,6 +26,7 @@ import sys
 from sqlalchemy import create_engine, Column, String, Integer, Text, ForeignKey, Enum, DateTime, Boolean, or_, UniqueConstraint, text
 from sqlalchemy.orm import sessionmaker, declarative_base, relationship
 from sqlalchemy.sql import func
+from sqlalchemy import inspect as sqlalchemy_inspect
 import enum
 import base64
 try:
@@ -597,11 +598,19 @@ def generate_unique_slug(db, base_slug: str) -> str:
     return slug
 
 def ensure_column_exists(table_name: str, column_name: str, declaration: str):
-    with engine.connect() as connection:
-        result = connection.execute(text(f"PRAGMA table_info({table_name})"))
-        columns = [row[1] for row in result]
+    """Ensure a column exists in a table (works with both SQLite and PostgreSQL)"""
+    inspector = sqlalchemy_inspect(engine)
+    try:
+        # Get existing columns using SQLAlchemy inspector (database-agnostic)
+        columns = [col['name'] for col in inspector.get_columns(table_name)]
         if column_name not in columns:
-            connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {declaration}"))
+            with engine.connect() as connection:
+                # Use database-agnostic ALTER TABLE
+                connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {declaration}"))
+                connection.commit()
+    except Exception as e:
+        # Table might not exist yet, which is fine
+        print(f"Note: Could not check columns for {table_name}: {e}")
 
 def ensure_default_company() -> Optional[str]:
     db = SessionLocal()
