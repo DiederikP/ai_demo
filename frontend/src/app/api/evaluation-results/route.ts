@@ -1,0 +1,47 @@
+import { NextRequest, NextResponse } from 'next/server';
+
+const BACKEND_URL = process.env.BACKEND_URL || process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+
+export async function GET(request: NextRequest) {
+  try {
+    const searchParams = request.nextUrl.searchParams;
+    const candidateId = searchParams.get('candidate_id');
+    const jobId = searchParams.get('job_id');
+    const resultType = searchParams.get('result_type');
+
+    let url = `${BACKEND_URL}/evaluation-results`;
+    const params = new URLSearchParams();
+    if (candidateId) params.append('candidate_id', candidateId);
+    if (jobId) params.append('job_id', jobId);
+    if (resultType) params.append('result_type', resultType);
+    
+    if (params.toString()) {
+      url += '?' + params.toString();
+    }
+
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      return NextResponse.json(
+        { error: errorText || 'Failed to fetch evaluation results' },
+        { status: response.status }
+      );
+    }
+
+    const data = await response.json();
+    return NextResponse.json(data);
+  } catch (error: any) {
+    console.error('Error fetching evaluation results:', error);
+    return NextResponse.json(
+      { error: error.message || 'Failed to fetch evaluation results' },
+      { status: 500 }
+    );
+  }
+}
+

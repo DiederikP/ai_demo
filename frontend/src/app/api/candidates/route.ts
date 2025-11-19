@@ -1,0 +1,47 @@
+import { NextRequest, NextResponse } from 'next/server';
+
+const BACKEND_URL = process.env.BACKEND_URL || process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+
+export async function GET(request: NextRequest) {
+  try {
+    const searchParams = request.nextUrl.searchParams;
+    const jobId = searchParams.get('job_id');
+
+    let url = `${BACKEND_URL}/candidates`;
+    if (jobId) {
+      url += `?job_id=${jobId}`;
+    }
+
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      return NextResponse.json(
+        { error: errorText || 'Failed to fetch candidates' },
+        { status: response.status }
+      );
+    }
+
+    const data = await response.json();
+    
+    // Transform data to include job_title for easier display
+    const candidates = (data.candidates || []).map((candidate: any) => ({
+      ...candidate,
+      job_title: candidate.job?.title || null,
+    }));
+
+    return NextResponse.json({ candidates });
+  } catch (error: any) {
+    console.error('Error fetching candidates:', error);
+    return NextResponse.json(
+      { error: error.message || 'Failed to fetch candidates' },
+      { status: 500 }
+    );
+  }
+}
+
