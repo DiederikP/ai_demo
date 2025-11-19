@@ -80,9 +80,17 @@ export default function CompanyKandidaten() {
     let filtered = [...candidates];
 
     if (viewMode === 'no-jobs') {
-      filtered = filtered.filter(c => !c.job_id && (!c.preferential_job_ids || c.preferential_job_ids.trim() === ''));
+      filtered = filtered.filter(c => {
+        const hasJobId = !!c.job_id;
+        const hasPrefJobs = c.preferential_job_ids && c.preferential_job_ids.trim() !== '';
+        return !hasJobId && !hasPrefJobs;
+      });
     } else if (viewMode === 'in-progress') {
-      filtered = filtered.filter(c => c.job_id || (c.preferential_job_ids && c.preferential_job_ids.trim() !== ''));
+      filtered = filtered.filter(c => {
+        const hasJobId = !!c.job_id;
+        const hasPrefJobs = c.preferential_job_ids && c.preferential_job_ids.trim() !== '';
+        return hasJobId || hasPrefJobs;
+      });
     }
 
     return filtered;
@@ -103,12 +111,17 @@ export default function CompanyKandidaten() {
     }
     
     if (filters.jobIds && filters.jobIds.length > 0) {
-      filtered = filtered.filter(c => 
-        filters.jobIds.includes(c.job_id) ||
-        (c.preferential_job_ids && filters.jobIds.some((jid: string) => 
-          c.preferential_job_ids?.split(',').map(id => id.trim()).includes(jid)
-        ))
-      );
+      filtered = filtered.filter(c => {
+        const matchesJobId = c.job_id && filters.jobIds.includes(c.job_id);
+        if (matchesJobId) return true;
+        
+        if (c.preferential_job_ids) {
+          const prefJobIds = c.preferential_job_ids.split(',').map(id => id.trim()).filter(Boolean);
+          return filters.jobIds.some((jid: string) => prefJobIds.includes(jid));
+        }
+        
+        return false;
+      });
     }
     
     if (filters.hasMotivationLetter) {
@@ -132,15 +145,20 @@ export default function CompanyKandidaten() {
   // Get job status for a candidate
   const getCandidateJobStatus = (candidate: Candidate) => {
     const jobIds: string[] = [];
-    if (candidate.job_id) jobIds.push(candidate.job_id);
-    if (candidate.preferential_job_ids) {
-      jobIds.push(...candidate.preferential_job_ids.split(',').map(id => id.trim()).filter(Boolean));
+    if (candidate.job_id) {
+      jobIds.push(candidate.job_id);
+    }
+    if (candidate.preferential_job_ids && candidate.preferential_job_ids.trim() !== '') {
+      const prefIds = candidate.preferential_job_ids.split(',').map(id => id.trim()).filter(Boolean);
+      jobIds.push(...prefIds);
     }
     
-    const jobStatuses = jobIds.map(jobId => {
-      const job = jobs.find(j => j.id === jobId);
-      return job ? { id: jobId, title: job.title, company: job.company } : null;
-    }).filter(Boolean) as Array<{ id: string; title: string; company: string }>;
+    const jobStatuses = jobIds
+      .map(jobId => {
+        const job = jobs.find(j => j.id === jobId);
+        return job ? { id: jobId, title: job.title, company: job.company } : null;
+      })
+      .filter((job): job is { id: string; title: string; company: string } => job !== null);
     
     return jobStatuses;
   };
@@ -221,7 +239,11 @@ export default function CompanyKandidaten() {
 
   const stats = useMemo(() => {
     const total = candidates.length;
-    const noJobs = candidates.filter(c => !c.job_id && (!c.preferential_job_ids || c.preferential_job_ids.trim() === '')).length;
+    const noJobs = candidates.filter(c => {
+      const hasJobId = !!c.job_id;
+      const hasPrefJobs = c.preferential_job_ids && c.preferential_job_ids.trim() !== '';
+      return !hasJobId && !hasPrefJobs;
+    }).length;
     const inProgress = total - noJobs;
     return { total, noJobs, inProgress };
   }, [candidates]);
@@ -232,7 +254,7 @@ export default function CompanyKandidaten() {
       <div className="mb-6">
         <div className="flex items-center justify-between mb-4">
           <div>
-            <h1 className="text-3xl font-bold text-barnes-dark-violet mb-2">Kandidaten</h1>
+        <h1 className="text-3xl font-bold text-barnes-dark-violet mb-2">Kandidaten</h1>
             <p className="text-barnes-dark-gray">Beheer en volg kandidaten in hun processen</p>
           </div>
           <button
@@ -531,18 +553,18 @@ export default function CompanyKandidaten() {
             </div>
 
             <form onSubmit={handleUpload} className="p-6 space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-barnes-dark-gray mb-2">
-                  CV Bestand *
-                </label>
-                <input
-                  type="file"
-                  accept=".pdf,.doc,.docx,.txt"
-                  onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
-                  required
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-barnes-violet"
-                />
-              </div>
+            <div>
+              <label className="block text-sm font-medium text-barnes-dark-gray mb-2">
+                CV Bestand *
+              </label>
+              <input
+                type="file"
+                accept=".pdf,.doc,.docx,.txt"
+                onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
+                required
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-barnes-violet"
+              />
+            </div>
 
               <div className="grid grid-cols-2 gap-4">
                 <div>
@@ -573,38 +595,38 @@ export default function CompanyKandidaten() {
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-barnes-dark-gray mb-2">
-                  Preferentiële Vacatures (Optioneel - Meerdere selecteren mogelijk)
-                </label>
-                <div className="space-y-2 max-h-48 overflow-y-auto border border-gray-300 rounded-lg p-3">
-                  {jobs.length === 0 ? (
-                    <p className="text-sm text-gray-500">Geen vacatures beschikbaar</p>
-                  ) : (
-                    jobs.map(job => (
-                      <label key={job.id} className="flex items-center gap-2 cursor-pointer hover:bg-gray-50 p-2 rounded">
-                        <input
-                          type="checkbox"
-                          checked={selectedJobs.includes(job.id)}
-                          onChange={(e) => {
-                            if (e.target.checked) {
-                              setSelectedJobs([...selectedJobs, job.id]);
-                            } else {
-                              setSelectedJobs(selectedJobs.filter(id => id !== job.id));
-                            }
-                          }}
-                          className="w-4 h-4 text-barnes-violet border-gray-300 rounded focus:ring-barnes-violet"
-                        />
-                        <span className="text-sm text-barnes-dark-gray">
-                          {job.title} - {job.company}
-                        </span>
-                      </label>
-                    ))
-                  )}
-                </div>
-                <p className="text-xs text-barnes-dark-gray mt-1">
-                  Selecteer vacatures waar deze kandidaat voorkeur voor heeft.
-                </p>
+              <label className="block text-sm font-medium text-barnes-dark-gray mb-2">
+                Preferentiële Vacatures (Optioneel - Meerdere selecteren mogelijk)
+              </label>
+              <div className="space-y-2 max-h-48 overflow-y-auto border border-gray-300 rounded-lg p-3">
+                {jobs.length === 0 ? (
+                  <p className="text-sm text-gray-500">Geen vacatures beschikbaar</p>
+                ) : (
+                  jobs.map(job => (
+                    <label key={job.id} className="flex items-center gap-2 cursor-pointer hover:bg-gray-50 p-2 rounded">
+                      <input
+                        type="checkbox"
+                        checked={selectedJobs.includes(job.id)}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setSelectedJobs([...selectedJobs, job.id]);
+                          } else {
+                            setSelectedJobs(selectedJobs.filter(id => id !== job.id));
+                          }
+                        }}
+                        className="w-4 h-4 text-barnes-violet border-gray-300 rounded focus:ring-barnes-violet"
+                      />
+                      <span className="text-sm text-barnes-dark-gray">
+                        {job.title} - {job.company}
+                      </span>
+                    </label>
+                  ))
+                )}
               </div>
+              <p className="text-xs text-barnes-dark-gray mt-1">
+                  Selecteer vacatures waar deze kandidaat voorkeur voor heeft.
+              </p>
+            </div>
 
               <div className="flex gap-3 pt-4">
                 <button
@@ -614,18 +636,18 @@ export default function CompanyKandidaten() {
                 >
                   Annuleren
                 </button>
-                <button
-                  type="submit"
-                  disabled={isUploading}
+          <button
+            type="submit"
+            disabled={isUploading}
                   className="flex-1 btn-primary px-4 py-2 disabled:opacity-50"
-                >
+          >
                   {isUploading ? 'Uploaden...' : 'Kandidaat Toevoegen'}
-                </button>
+          </button>
               </div>
-            </form>
-          </div>
-        </div>
-      )}
+        </form>
+      </div>
+            </div>
+          )}
     </div>
   );
 }
