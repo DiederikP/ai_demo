@@ -27,6 +27,7 @@ services:
   - type: web
     name: ai-demo-frontend
     env: node
+    nodeVersion: 20.18.0
     rootDir: frontend
     buildCommand: npm install && npm run build
     startCommand: npm run start
