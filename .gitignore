@@ -49,3 +49,15 @@ backups/
 # Temporary files
 *.tmp
 *.temp
+
+# Local development files
+backend.log
+backend.pid
+frontend.log
+*.pid
+
+# Test and development scripts (keep in test branch)
+test_*.py
+*_test.py
+check_*.py
+restore_*.py
