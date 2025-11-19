@@ -6,12 +6,17 @@ export async function GET() {
   try {
     // First, try to wake up the backend by calling health endpoint
     try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 2000); // 2 second timeout
+      
       await fetch(`${BACKEND_URL}/health`, {
         method: 'GET',
-        signal: AbortSignal.timeout(2000), // 2 second timeout
+        signal: controller.signal,
       }).catch(() => {
         // Ignore errors - backend might be sleeping
       });
+      
+      clearTimeout(timeoutId);
     } catch {
       // Ignore wake-up errors
     }
