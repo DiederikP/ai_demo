@@ -357,15 +357,17 @@ export default function CompanyKandidaten() {
           <EmptyState
             icon="📄"
             title="Geen kandidaten gevonden"
-            description={searchTerm || Object.keys(filters).length > 0
-              ? "Probeer je zoekterm of filters aan te passen"
-              : viewMode === 'no-jobs'
-              ? "Alle kandidaten hebben vacatures toegewezen"
-              : viewMode === 'in-progress'
-              ? "Geen kandidaten in proces"
-              : "Upload je eerste kandidaat om te beginnen"}
+            description={
+              searchTerm || (filters && Object.keys(filters).length > 0)
+                ? "Probeer je zoekterm of filters aan te passen"
+                : viewMode === 'no-jobs'
+                ? "Alle kandidaten hebben vacatures toegewezen"
+                : viewMode === 'in-progress'
+                ? "Geen kandidaten in proces"
+                : "Upload je eerste kandidaat om te beginnen"
+            }
             action={
-              filteredCandidates.length === 0 && !searchTerm && Object.keys(filters).length === 0
+              filteredCandidates.length === 0 && !searchTerm && (!filters || Object.keys(filters).length === 0)
                 ? {
                     label: "Nieuwe kandidaat toevoegen",
                     onClick: () => setShowAddModal(true)
