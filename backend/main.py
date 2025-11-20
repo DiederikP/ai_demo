@@ -5703,28 +5703,63 @@ async def create_company(
 
 @app.get("/recruiter/vacancies")
 async def get_recruiter_vacancies(
-    include_new: bool = Query(False, description="Include new vacancies not yet assigned"),
+    include_new: bool = Query(True, description="Include new vacancies not yet assigned (default: True)"),
     current_user: UserDB = Depends(require_role(["admin", "recruiter"]))
 ):
-    """Get vacancies assigned to the current recruiter, optionally include new vacancies"""
+    """Get all vacancies visible to recruiters (assigned + new vacancies from company portals)
+    
+    Recruiters see:
+    - Vacancies assigned to them (assigned_agency_id == current_user.id)
+    - All active vacancies from company portals (except their own company's vacancies)
+    """
     try:
         import json
         db = SessionLocal()
         
-        # Get vacancies assigned to this recruiter
-        assigned_query = db.query(JobPostingDB).filter(JobPostingDB.assigned_agency_id == current_user.id)
-        assigned_jobs = assigned_query.all()
+        # Get all active vacancies from company portals
+        # Exclude vacancies from the recruiter's own company (if they have one)
+        all_vacancies_query = db.query(JobPostingDB)
+        
+        # Only show active vacancies
+        if hasattr(JobPostingDB, 'is_active'):
+            all_vacancies_query = all_vacancies_query.filter(JobPostingDB.is_active == True)
+        
+        # Exclude vacancies from recruiter's own company (if they have a company_id)
+        # Recruiters shouldn't see their own company's vacancies
+        if current_user.company_id:
+            all_vacancies_query = all_vacancies_query.filter(JobPostingDB.company_id != current_user.company_id)
+        # If no company_id, show all vacancies
+        
+        # Apply include_new filter
+        if not include_new:
+            # If include_new is False, only show assigned vacancies
+            all_vacancies_query = all_vacancies_query.filter(JobPostingDB.assigned_agency_id == current_user.id)
+        else:
+            # If include_new is True (default), show all vacancies (assigned or not)
+            # Don't filter by assigned_agency_id - we'll mark them as assigned/not assigned in the response
+        
+        all_jobs = all_vacancies_query.all()
         
         result = []
         assigned_job_ids = set()
         
+        # First, collect assigned jobs to mark them
+        assigned_query = db.query(JobPostingDB).filter(JobPostingDB.assigned_agency_id == current_user.id)
+        assigned_jobs = assigned_query.all()
         for job in assigned_jobs:
             assigned_job_ids.add(job.id)
-            # Count candidates submitted by this recruiter for each vacancy
-            candidates_count = db.query(CandidateDB).filter(
-                CandidateDB.job_id == job.id,
-                CandidateDB.submitted_by_company_id == current_user.company_id
-            ).count()
+        
+        # Process all jobs
+        for job in all_jobs:
+            is_assigned = job.id in assigned_job_ids
+            
+            # Count candidates submitted by this recruiter for this vacancy
+            candidates_count = 0
+            if current_user.company_id:
+                candidates_count = db.query(CandidateDB).filter(
+                    CandidateDB.job_id == job.id,
+                    CandidateDB.submitted_by_company_id == current_user.company_id
+                ).count()
             
             result.append({
                 "id": job.id,
@@ -5737,43 +5772,10 @@ async def get_recruiter_vacancies(
                 "created_at": job.created_at.isoformat() if job.created_at else None,
                 "is_active": job.is_active if hasattr(job, 'is_active') else True,
                 "assigned_agency_id": job.assigned_agency_id,
-                "is_assigned": True,
+                "is_assigned": is_assigned,
                 "candidates_count": candidates_count,
                 "company_id": job.company_id if hasattr(job, 'company_id') else None
             })
-        
-        # If requested, also include new vacancies not yet assigned
-        if include_new:
-            # Get all active vacancies that are not assigned to this recruiter
-            # Exclude vacancies from the recruiter's own company
-            all_vacancies_query = db.query(JobPostingDB).filter(
-                JobPostingDB.assigned_agency_id.is_(None)
-            )
-            # Only filter by company_id if it's not None
-            if current_user.company_id:
-                all_vacancies_query = all_vacancies_query.filter(JobPostingDB.company_id != current_user.company_id)  # Don't show own company's vacancies
-            if hasattr(JobPostingDB, 'is_active'):
-                all_vacancies_query = all_vacancies_query.filter(JobPostingDB.is_active == True)
-            
-            new_vacancies = all_vacancies_query.all()
-            
-            for job in new_vacancies:
-                if job.id not in assigned_job_ids:
-                    result.append({
-                        "id": job.id,
-                        "title": job.title,
-                        "company": job.company,
-                        "description": job.description,
-                        "requirements": job.requirements,
-                        "location": job.location,
-                        "salary_range": job.salary_range,
-                        "created_at": job.created_at.isoformat() if job.created_at else None,
-                        "is_active": job.is_active if hasattr(job, 'is_active') else True,
-                        "assigned_agency_id": None,
-                        "is_assigned": False,
-                        "candidates_count": 0,
-                        "company_id": job.company_id if hasattr(job, 'company_id') else None
-                    })
         
         # Sort by created_at descending (newest first), handle None values
         result.sort(key=lambda x: x.get("created_at") or "", reverse=True)

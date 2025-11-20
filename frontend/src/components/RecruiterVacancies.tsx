@@ -26,12 +26,11 @@ export default function RecruiterVacancies() {
     loadVacancies();
   }, []);
 
-  const [showNewVacancies, setShowNewVacancies] = useState(true);
-
   const loadVacancies = async () => {
     try {
       const headers = getAuthHeaders();
-      const url = `/api/recruiter/vacancies?include_new=${showNewVacancies}`;
+      // Always include new vacancies (default behavior)
+      const url = `/api/recruiter/vacancies?include_new=true`;
       const response = await fetch(url, { headers });
       if (response.ok) {
         const data = await response.json();
@@ -51,7 +50,7 @@ export default function RecruiterVacancies() {
 
   useEffect(() => {
     loadVacancies();
-  }, [showNewVacancies]);
+  }, []);
 
   if (isLoading) {
     return (
@@ -66,17 +65,9 @@ export default function RecruiterVacancies() {
 
   return (
     <div className="max-w-7xl mx-auto">
-      <div className="flex items-center justify-between mb-8">
-        <h1 className="text-3xl font-bold text-barnes-dark-violet">Vacatures</h1>
-        <label className="flex items-center gap-2 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={showNewVacancies}
-            onChange={(e) => setShowNewVacancies(e.target.checked)}
-            className="rounded border-gray-300 text-barnes-violet focus:ring-barnes-violet"
-          />
-          <span className="text-sm text-barnes-dark-gray">Toon nieuwe vacatures</span>
-        </label>
+      <div className="mb-8">
+        <h1 className="text-3xl font-bold text-barnes-dark-violet mb-2">Vacatures</h1>
+        <p className="text-sm text-barnes-dark-gray">Alle beschikbare vacatures van bedrijven (toegewezen en nieuw)</p>
       </div>
 
       {/* New Vacancies Section */}
