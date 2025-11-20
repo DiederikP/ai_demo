@@ -37,7 +37,8 @@ export default function RecruiterDashboard() {
       
       console.log('[RecruiterDashboard] Loading data...');
       console.log('[RecruiterDashboard] Headers:', headers);
-      console.log('[RecruiterDashboard] Token present:', !!headers['Authorization']);
+      const headersObj = headers as Record<string, string>;
+      console.log('[RecruiterDashboard] Token present:', !!headersObj['Authorization']);
       
       const [vacanciesRes, candidatesRes] = await Promise.all([
         fetch('/api/recruiter/vacancies', { headers }).catch((err) => {
