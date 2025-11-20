@@ -9,6 +9,9 @@ Usage:
 
 Or run with:
     DATABASE_URL="your_render_db_url" python sync_to_render_db.py
+    
+To skip confirmation prompt:
+    DATABASE_URL="your_render_db_url" python sync_to_render_db.py --yes
 """
 
 import os
@@ -189,11 +192,15 @@ def main():
     for table in tables_to_sync:
         print(f"   - {table}")
     
-    # Confirm
-    response = input("\n⚠️  This will REPLACE all data in Render database. Continue? (yes/no): ")
-    if response.lower() != 'yes':
-        print("❌ Cancelled")
-        sys.exit(0)
+    # Confirm (skip if --yes flag is provided)
+    auto_confirm = '--yes' in sys.argv
+    if not auto_confirm:
+        response = input("\n⚠️  This will REPLACE all data in Render database. Continue? (yes/no): ")
+        if response.lower() != 'yes':
+            print("❌ Cancelled")
+            sys.exit(0)
+    else:
+        print("\n⚠️  This will REPLACE all data in Render database. Continuing automatically (--yes flag)...")
     
     # Sync each table
     total_synced = 0
