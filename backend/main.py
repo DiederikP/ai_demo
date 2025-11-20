@@ -3643,17 +3643,65 @@ BELANGRIJK:
         )
 
 @app.get("/candidates")
-async def get_candidates(job_id: Optional[str] = None, company_id: Optional[str] = None):
-    """Get all evaluated candidates with their evaluations, optionally filtered by company_id"""
+async def get_candidates(
+    job_id: Optional[str] = None,
+    company_id: Optional[str] = None,
+    current_user: UserDB = Depends(get_current_user)
+):
+    """Get all evaluated candidates with their evaluations, optionally filtered by job_id or company_id
+    
+    For company users: Only shows candidates submitted by recruiters (submitted_by_company_id is set)
+    For recruiter users: Shows all candidates they submitted (submitted_by_company_id matches their company_id)
+    For admin users: Shows all candidates
+    """
     try:
         db = SessionLocal()
         
         # Get candidates with their evaluations and job info
         query = db.query(CandidateDB)
         
-        # Filter by company_id if provided (multi-portal isolation)
-        # Candidates belong to a company through their submitted_by_company_id or through their job's company_id
-        if company_id:
+        # Role-based filtering
+        user_role = current_user.role.lower() if current_user.role else ""
+        
+        if user_role == "admin":
+            # Admins see all candidates
+            pass
+        elif user_role == "recruiter":
+            # Recruiters see only candidates they submitted (or from their company)
+            if current_user.company_id:
+                query = query.filter(CandidateDB.submitted_by_company_id == current_user.company_id)
+        elif user_role in ["company_admin", "company_user", "viewer"]:
+            # Company users see only candidates submitted by recruiters for their company's jobs
+            # Candidates must have submitted_by_company_id set (indicating recruiter submission)
+            # AND be assigned to one of their company's jobs
+            query = query.filter(CandidateDB.submitted_by_company_id.isnot(None))
+            
+            # Also filter by company's jobs if company_id is provided or from user context
+            effective_company_id = company_id or current_user.company_id
+            if effective_company_id:
+                company_jobs = db.query(JobPostingDB.id).filter(JobPostingDB.company_id == effective_company_id).all()
+                company_job_ids = [job[0] for job in company_jobs]
+                
+                if company_job_ids:
+                    # Filter candidates assigned to this company's jobs
+                    query = query.filter(
+                        or_(
+                            CandidateDB.job_id.in_(company_job_ids),
+                            # Also check preferential_job_ids
+                            or_(*[CandidateDB.preferential_job_ids.like(f"%{job_id}%") for job_id in company_job_ids])
+                        )
+                    )
+                else:
+                    # No jobs for this company, return empty
+                    db.close()
+                    return {
+                        "success": True,
+                        "candidates": []
+                    }
+        
+        # Legacy company_id filtering (for backward compatibility, but now handled by role-based filtering above)
+        # Only apply if not already filtered by role
+        if company_id and user_role not in ["company_admin", "company_user", "viewer"]:
             # Filter candidates that belong to this company (either directly submitted by company or through job)
             subquery = db.query(JobPostingDB.id).filter(JobPostingDB.company_id == company_id).subquery()
             query = query.filter(

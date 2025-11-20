@@ -17,11 +17,19 @@ export async function GET(request: NextRequest) {
       url += `?${params.toString()}`;
     }
 
+    // Get auth headers to forward to backend
+    const authHeader = request.headers.get('authorization');
+    
+    const headers: HeadersInit = {
+      'Content-Type': 'application/json',
+    };
+    if (authHeader) {
+      headers['Authorization'] = authHeader;
+    }
+
     const response = await fetch(url, {
       method: 'GET',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers,
     });
 
     if (!response.ok) {

@@ -72,11 +72,6 @@ export default function JobDetailPage() {
     notes: '',
   });
   const [isSavingSchedule, setIsSavingSchedule] = useState(false);
-  const [showOfferCandidateModal, setShowOfferCandidateModal] = useState(false);
-  const [availableCandidates, setAvailableCandidates] = useState<Candidate[]>([]);
-  const [selectedCandidatesToOffer, setSelectedCandidatesToOffer] = useState<string[]>([]);
-  const [isLoadingAvailableCandidates, setIsLoadingAvailableCandidates] = useState(false);
-  const [isOfferingCandidates, setIsOfferingCandidates] = useState(false);
 
   useEffect(() => {
     loadData();
@@ -258,82 +253,6 @@ export default function JobDetailPage() {
     }
   };
 
-  const loadAvailableCandidates = async () => {
-    setIsLoadingAvailableCandidates(true);
-    try {
-      // Get all candidates that are not yet assigned to this vacancy
-      const response = await fetch('/api/candidates');
-      if (response.ok) {
-        const data = await response.json();
-        // Filter out candidates already assigned to this vacancy
-        const currentCandidateIds = candidates.map(c => c.id);
-        const available = (data.candidates || []).filter((c: Candidate) => {
-          // Not already in this vacancy
-          if (currentCandidateIds.includes(c.id)) return false;
-          // Not already assigned to this job
-          if (c.job_id === jobId) return false;
-          // Not in preferential_job_ids
-          if (c.preferential_job_ids && c.preferential_job_ids.includes(jobId)) return false;
-          return true;
-        });
-        setAvailableCandidates(available);
-      }
-    } catch (error: any) {
-      console.error('Error loading available candidates:', error);
-      alert('Fout bij laden kandidaten: ' + (error.message || 'Onbekende fout'));
-    } finally {
-      setIsLoadingAvailableCandidates(false);
-    }
-  };
-
-  const handleOfferCandidates = async () => {
-    if (selectedCandidatesToOffer.length === 0) {
-      alert('Selecteer minimaal één kandidaat');
-      return;
-    }
-
-    setIsOfferingCandidates(true);
-    try {
-      // Assign each candidate to this job
-      for (const candidateId of selectedCandidatesToOffer) {
-        // Update candidate's job assignment
-        // If candidate already has a job_id, add to preferential_job_ids instead
-        const candidate = availableCandidates.find(c => c.id === candidateId);
-        if (candidate) {
-          const response = await fetch(`/api/candidates/${candidateId}/pipeline`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              // If candidate has no job_id, set it. Otherwise, add to preferential_job_ids
-              ...(candidate.job_id 
-                ? { preferential_job_ids: candidate.preferential_job_ids 
-                    ? `${candidate.preferential_job_ids},${jobId}`
-                    : jobId }
-                : { job_id: jobId }),
-              pipeline_stage: 'introduced',
-              pipeline_status: 'active',
-            }),
-          });
-
-          if (!response.ok) {
-            const error = await response.json().catch(() => ({ error: 'Unknown error' }));
-            console.error(`Failed to assign candidate ${candidateId}:`, error);
-          }
-        }
-      }
-
-      // Reload data
-      await loadData();
-      setShowOfferCandidateModal(false);
-      setSelectedCandidatesToOffer([]);
-      alert(`${selectedCandidatesToOffer.length} kandidaat(en) succesvol aangeboden voor deze vacature`);
-    } catch (error: any) {
-      console.error('Error offering candidates:', error);
-      alert('Fout bij aanbieden kandidaten: ' + (error.message || 'Onbekende fout'));
-    } finally {
-      setIsOfferingCandidates(false);
-    }
-  };
 
   const handleSaveSchedule = async () => {
     if (!scheduleForm.date || !scheduleForm.time || !conversationModal.candidate) {
@@ -801,17 +720,8 @@ export default function JobDetailPage() {
                   <h2 className="text-xl font-semibold text-barnes-dark-violet">Kandidaten</h2>
                   <div className="flex items-center gap-4">
                     <span className="text-sm text-barnes-dark-gray">
-                      {candidates.length} kandidaat{candidates.length === 1 ? '' : 'en'}
+                      {candidates.length} kandidaat{candidates.length === 1 ? '' : 'en'} (ingediend door recruiters)
                     </span>
-                    <button
-                      onClick={() => {
-                        loadAvailableCandidates();
-                        setShowOfferCandidateModal(true);
-                      }}
-                      className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm font-medium"
-                    >
-                      + Kandidaat Aanbieden
-                    </button>
                     <button
                       onClick={handleAiMatching}
                       disabled={isMatching || candidates.length === 0}
@@ -1455,114 +1365,6 @@ export default function JobDetailPage() {
         </div>
       </div>
 
-      {/* Offer Candidate Modal */}
-      {showOfferCandidateModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col">
-            <div className="p-6 border-b border-gray-200">
-              <div className="flex items-center justify-between">
-                <h2 className="text-2xl font-bold text-barnes-dark-violet">
-                  Kandidaat Aanbieden voor Vacature
-                </h2>
-                <button
-                  onClick={() => {
-                    setShowOfferCandidateModal(false);
-                    setSelectedCandidatesToOffer([]);
-                  }}
-                  className="text-gray-400 hover:text-gray-600"
-                >
-                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                </button>
-              </div>
-              <p className="text-sm text-barnes-dark-gray mt-2">
-                Selecteer kandidaten uit je database om aan te bieden voor deze vacature
-              </p>
-            </div>
-
-            <div className="flex-1 overflow-y-auto p-6">
-              {isLoadingAvailableCandidates ? (
-                <div className="text-center py-12">
-                  <p className="text-barnes-dark-gray">Laden...</p>
-                </div>
-              ) : availableCandidates.length === 0 ? (
-                <div className="text-center py-12">
-                  <p className="text-barnes-dark-gray mb-4">Geen beschikbare kandidaten</p>
-                  <p className="text-sm text-gray-500">
-                    Alle kandidaten zijn al toegewezen aan deze vacature, of er zijn nog geen kandidaten in de database.
-                  </p>
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {availableCandidates.map((candidate) => (
-                    <label
-                      key={candidate.id}
-                      className={`flex items-center gap-4 p-4 border-2 rounded-lg cursor-pointer transition-colors ${
-                        selectedCandidatesToOffer.includes(candidate.id)
-                          ? 'border-barnes-violet bg-barnes-violet/5'
-                          : 'border-gray-200 hover:border-gray-300'
-                      }`}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={selectedCandidatesToOffer.includes(candidate.id)}
-                        onChange={(e) => {
-                          if (e.target.checked) {
-                            setSelectedCandidatesToOffer([...selectedCandidatesToOffer, candidate.id]);
-                          } else {
-                            setSelectedCandidatesToOffer(selectedCandidatesToOffer.filter(id => id !== candidate.id));
-                          }
-                        }}
-                        className="w-5 h-5 text-barnes-violet rounded border-gray-300 focus:ring-barnes-violet"
-                      />
-                      <div className="flex-1">
-                        <p className="font-semibold text-barnes-dark-violet">{candidate.name}</p>
-                        <p className="text-sm text-barnes-dark-gray">{candidate.email || '—'}</p>
-                        {candidate.job_id && (
-                          <p className="text-xs text-gray-500 mt-1">
-                            Al toegewezen aan een andere vacature
-                          </p>
-                        )}
-                      </div>
-                      <button
-                        onClick={() => router.push(`/company/kandidaten/${candidate.id}`)}
-                        className="text-sm text-barnes-violet hover:underline"
-                      >
-                        Details →
-                      </button>
-                    </label>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <div className="p-6 border-t border-gray-200 flex items-center justify-between">
-              <p className="text-sm text-barnes-dark-gray">
-                {selectedCandidatesToOffer.length} kandidaat(en) geselecteerd
-              </p>
-              <div className="flex gap-3">
-                <button
-                  onClick={() => {
-                    setShowOfferCandidateModal(false);
-                    setSelectedCandidatesToOffer([]);
-                  }}
-                  className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors"
-                >
-                  Annuleren
-                </button>
-                <button
-                  onClick={handleOfferCandidates}
-                  disabled={selectedCandidatesToOffer.length === 0 || isOfferingCandidates}
-                  className="px-4 py-2 bg-barnes-violet text-white rounded-lg hover:bg-barnes-dark-violet transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {isOfferingCandidates ? 'Aanbieden...' : `${selectedCandidatesToOffer.length} Kandidaat(en) Aanbieden`}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
