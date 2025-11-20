@@ -6,16 +6,36 @@ export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData();
     
+    // Get authorization header and forward it to backend
+    const authHeader = request.headers.get('authorization') || request.headers.get('Authorization');
+    
+    const headers: HeadersInit = {};
+    if (authHeader) {
+      headers['Authorization'] = authHeader;
+    }
+    
+    // The backend will extract company_id from the authenticated user
+    // If user is a recruiter, it will automatically set submitted_by_company_id
+    
     const backendResponse = await fetch(`${BACKEND_URL}/upload-resume`, {
       method: 'POST',
+      headers,
       body: formData,
     });
 
     if (!backendResponse.ok) {
       const errorText = await backendResponse.text();
-      console.error('Backend upload resume error:', errorText);
+      let errorData: any = { error: errorText || 'Failed to upload resume' };
+      
+      try {
+        errorData = JSON.parse(errorText);
+      } catch {
+        // Not JSON, use text as error
+      }
+      
+      console.error('Backend upload resume error:', errorData);
       return NextResponse.json(
-        { error: errorText || 'Failed to upload resume' },
+        errorData,
         { status: backendResponse.status }
       );
     }

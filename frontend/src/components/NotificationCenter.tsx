@@ -21,14 +21,25 @@ interface NotificationCenterProps {
   onClose: () => void;
 }
 
+interface ActivityHistory {
+  id: string;
+  type: string;
+  description: string;
+  timestamp: string;
+  user_name?: string;
+}
+
 export default function NotificationCenter({ userId, isOpen, onClose }: NotificationCenterProps) {
   const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [activityHistory, setActivityHistory] = useState<ActivityHistory[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [activeTab, setActiveTab] = useState<'notifications' | 'history'>('notifications');
   const router = useRouter();
 
   useEffect(() => {
     if (isOpen && userId) {
       loadNotifications();
+      loadActivityHistory();
     }
   }, [isOpen, userId]);
 
@@ -44,6 +55,54 @@ export default function NotificationCenter({ userId, isOpen, onClose }: Notifica
       console.error('Error loading notifications:', error);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const loadActivityHistory = async () => {
+    try {
+      // Load activity history from notifications and evaluation results
+      const [notificationsRes, resultsRes] = await Promise.all([
+        fetch(`/api/notifications?user_id=${userId}&unread_only=false`),
+        fetch('/api/evaluation-results')
+      ]);
+      
+      const history: ActivityHistory[] = [];
+      
+      if (notificationsRes.ok) {
+        const notifData = await notificationsRes.json();
+        if (notifData.success && notifData.notifications) {
+          notifData.notifications.forEach((n: Notification) => {
+            history.push({
+              id: n.id,
+              type: n.type,
+              description: `${n.title}${n.message ? ': ' + n.message : ''}`,
+              timestamp: n.created_at,
+              user_name: 'Systeem'
+            });
+          });
+        }
+      }
+      
+      if (resultsRes.ok) {
+        const resultsData = await resultsRes.json();
+        if (resultsData.results) {
+          resultsData.results.slice(0, 20).forEach((r: any) => {
+            history.push({
+              id: r.id,
+              type: r.result_type === 'evaluation' ? 'evaluation_complete' : 'debate_complete',
+              description: `${r.result_type === 'evaluation' ? 'Evaluatie' : 'Debat'} voltooid voor ${r.candidate_name || 'kandidaat'}`,
+              timestamp: r.created_at,
+              user_name: 'Systeem'
+            });
+          });
+        }
+      }
+      
+      // Sort by timestamp, most recent first
+      history.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+      setActivityHistory(history.slice(0, 50)); // Keep last 50 activities
+    } catch (error) {
+      console.error('Error loading activity history:', error);
     }
   };
 
@@ -113,77 +172,139 @@ export default function NotificationCenter({ userId, isOpen, onClose }: Notifica
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="p-4 border-b border-gray-200 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <h2 className="text-lg font-semibold text-barnes-dark-violet">Notificaties</h2>
-            {unreadCount > 0 && (
-              <span className="px-2 py-1 bg-barnes-violet text-white text-xs rounded-full">
-                {unreadCount}
-              </span>
-            )}
-          </div>
-          <div className="flex items-center gap-2">
-            {unreadCount > 0 && (
+        <div className="p-4 border-b border-gray-200">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-3">
+              <h2 className="text-lg font-semibold text-barnes-dark-violet">Notificaties</h2>
+              {unreadCount > 0 && (
+                <span className="px-2 py-1 bg-barnes-violet text-white text-xs rounded-full">
+                  {unreadCount}
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              {unreadCount > 0 && activeTab === 'notifications' && (
+                <button
+                  onClick={markAllAsRead}
+                  className="text-xs text-barnes-violet hover:underline"
+                >
+                  Alles lezen
+                </button>
+              )}
               <button
-                onClick={markAllAsRead}
-                className="text-xs text-barnes-violet hover:underline"
+                onClick={onClose}
+                className="p-1 hover:bg-gray-100 rounded"
               >
-                Alles lezen
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
               </button>
-            )}
+            </div>
+          </div>
+          
+          {/* Tabs */}
+          <div className="flex gap-2 border-b border-gray-200">
             <button
-              onClick={onClose}
-              className="p-1 hover:bg-gray-100 rounded"
+              onClick={() => setActiveTab('notifications')}
+              className={`px-4 py-2 text-sm font-medium transition-colors ${
+                activeTab === 'notifications'
+                  ? 'text-barnes-violet border-b-2 border-barnes-violet'
+                  : 'text-barnes-dark-gray hover:text-barnes-violet'
+              }`}
             >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-              </svg>
+              Notificaties {unreadCount > 0 && `(${unreadCount})`}
+            </button>
+            <button
+              onClick={() => setActiveTab('history')}
+              className={`px-4 py-2 text-sm font-medium transition-colors ${
+                activeTab === 'history'
+                  ? 'text-barnes-violet border-b-2 border-barnes-violet'
+                  : 'text-barnes-dark-gray hover:text-barnes-violet'
+              }`}
+            >
+              Geschiedenis
             </button>
           </div>
         </div>
 
-        {/* Notifications List */}
+        {/* Content */}
         <div className="flex-1 overflow-y-auto">
           {isLoading ? (
             <div className="p-8 text-center">
               <div className="inline-block w-6 h-6 border-2 border-barnes-violet border-t-transparent rounded-full animate-spin"></div>
             </div>
-          ) : notifications.length === 0 ? (
-            <div className="p-8 text-center text-barnes-dark-gray">
-              <p className="text-sm">Geen notificaties</p>
-            </div>
-          ) : (
-            <div className="divide-y divide-gray-100">
-              {notifications.map(notification => (
-                <button
-                  key={notification.id}
-                  onClick={() => handleNotificationClick(notification)}
-                  className={`w-full text-left p-4 hover:bg-gray-50 transition-colors ${
-                    !notification.is_read ? 'bg-barnes-violet/5' : ''
-                  }`}
-                >
-                  <div className="flex items-start gap-3">
-                    <span className="text-2xl">{getTypeIcon(notification.type)}</span>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-1">
-                        <p className="font-medium text-barnes-dark-violet">{notification.title}</p>
-                        {!notification.is_read && (
-                          <span className="w-2 h-2 bg-barnes-violet rounded-full"></span>
+          ) : activeTab === 'notifications' ? (
+            notifications.length === 0 ? (
+              <div className="p-8 text-center text-barnes-dark-gray">
+                <p className="text-sm">Geen notificaties</p>
+              </div>
+            ) : (
+              <div className="divide-y divide-gray-100">
+                {notifications.map(notification => (
+                  <button
+                    key={notification.id}
+                    onClick={() => handleNotificationClick(notification)}
+                    className={`w-full text-left p-4 hover:bg-gray-50 transition-colors ${
+                      !notification.is_read ? 'bg-barnes-violet/5' : ''
+                    }`}
+                  >
+                    <div className="flex items-start gap-3">
+                      <span className="text-2xl">{getTypeIcon(notification.type)}</span>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-1">
+                          <p className="font-medium text-barnes-dark-violet">{notification.title}</p>
+                          {!notification.is_read && (
+                            <span className="w-2 h-2 bg-barnes-violet rounded-full"></span>
+                          )}
+                        </div>
+                        {notification.message && (
+                          <p className="text-sm text-barnes-dark-gray line-clamp-2">
+                            {notification.message}
+                          </p>
                         )}
-                      </div>
-                      {notification.message && (
-                        <p className="text-sm text-barnes-dark-gray line-clamp-2">
-                          {notification.message}
+                        <p className="text-xs text-gray-400 mt-1">
+                          {new Date(notification.created_at).toLocaleString('nl-NL')}
                         </p>
-                      )}
-                      <p className="text-xs text-gray-400 mt-1">
-                        {new Date(notification.created_at).toLocaleString('nl-NL')}
-                      </p>
+                      </div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )
+          ) : (
+            // History Tab
+            activityHistory.length === 0 ? (
+              <div className="p-8 text-center text-barnes-dark-gray">
+                <p className="text-sm">Geen geschiedenis beschikbaar</p>
+              </div>
+            ) : (
+              <div className="divide-y divide-gray-100">
+                {activityHistory.map(activity => (
+                  <div
+                    key={activity.id}
+                    className="w-full text-left p-4 hover:bg-gray-50 transition-colors"
+                  >
+                    <div className="flex items-start gap-3">
+                      <span className="text-2xl">{getTypeIcon(activity.type)}</span>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-1">
+                          <p className="font-medium text-barnes-dark-violet">{activity.description}</p>
+                        </div>
+                        <div className="flex items-center gap-2 text-xs text-gray-400 mt-1">
+                          <span>{new Date(activity.timestamp).toLocaleString('nl-NL')}</span>
+                          {activity.user_name && (
+                            <>
+                              <span>•</span>
+                              <span>{activity.user_name}</span>
+                            </>
+                          )}
+                        </div>
+                      </div>
                     </div>
                   </div>
-                </button>
-              ))}
-            </div>
+                ))}
+              </div>
+            )
           )}
         </div>
       </div>

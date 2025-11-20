@@ -12,6 +12,7 @@ interface JobDescription {
   location: string;
   salary_range: string;
   created_at: string;
+  weighted_requirements?: string | null;  // JSON string of { "requirement": weight }
 }
 
 interface JobDescriptionManagerProps {
@@ -30,6 +31,7 @@ export default function JobDescriptionManager({ jobs, onJobsChange }: JobDescrip
     location: '',
     salary_range: ''
   });
+  const [weightedRequirements, setWeightedRequirements] = useState<Array<{ requirement: string; weight: number }>>([]);
   const [jobUrl, setJobUrl] = useState('');
   const [isLoadingFromUrl, setIsLoadingFromUrl] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -40,12 +42,24 @@ export default function JobDescriptionManager({ jobs, onJobsChange }: JobDescrip
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
+    // Build weighted requirements JSON
+    const weightedRequirementsObj: Record<string, number> = {};
+    weightedRequirements.forEach(item => {
+      if (item.requirement.trim()) {
+        weightedRequirementsObj[item.requirement.trim()] = item.weight;
+      }
+    });
+    const weightedRequirementsJson = Object.keys(weightedRequirementsObj).length > 0 
+      ? JSON.stringify(weightedRequirementsObj) 
+      : null;
+    
     try {
       const response = await fetch('/api/upload-job', {
         method: editingJob ? 'PUT' : 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ...formData,
+          weighted_requirements: weightedRequirementsJson,
           ...(editingJob && { id: editingJob.id })
         })
       });
@@ -55,6 +69,7 @@ export default function JobDescriptionManager({ jobs, onJobsChange }: JobDescrip
         setIsOpen(false);
         setEditingJob(null);
         setFormData({ title: '', company: '', description: '', requirements: '', location: '', salary_range: '' });
+        setWeightedRequirements([]);
         setJobUrl(''); // Clear URL field
       } else {
         const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
@@ -89,6 +104,23 @@ export default function JobDescriptionManager({ jobs, onJobsChange }: JobDescrip
       location: job.location,
       salary_range: job.salary_range
     });
+    
+    // Parse weighted requirements from JSON
+    if (job.weighted_requirements) {
+      try {
+        const parsed = JSON.parse(job.weighted_requirements);
+        const weightedList = Object.entries(parsed).map(([requirement, weight]) => ({
+          requirement,
+          weight: typeof weight === 'number' ? weight : parseFloat(String(weight)) || 5
+        }));
+        setWeightedRequirements(weightedList);
+      } catch {
+        setWeightedRequirements([]);
+      }
+    } else {
+      setWeightedRequirements([]);
+    }
+    
     setIsOpen(true);
   };
 
@@ -242,6 +274,73 @@ export default function JobDescriptionManager({ jobs, onJobsChange }: JobDescrip
                 />
               </div>
               
+              {/* Weighted Requirements Section */}
+              <div className="p-4 bg-blue-50 rounded-lg border border-blue-200">
+                <div className="flex items-center justify-between mb-3">
+                  <label className="block text-sm font-medium text-barnes-dark-violet">
+                    Gewogen Vereisten (Optioneel)
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setWeightedRequirements([...weightedRequirements, { requirement: '', weight: 5 }])}
+                    className="text-xs btn-secondary"
+                  >
+                    + Toevoegen
+                  </button>
+                </div>
+                <p className="text-xs text-barnes-dark-gray mb-3">
+                  Definieer specifieke vereisten met een gewicht (1-10). Hogere gewichten betekenen dat deze vereisten belangrijker zijn in de evaluatie.
+                </p>
+                {weightedRequirements.length === 0 ? (
+                  <p className="text-xs text-gray-500 italic">Geen gewogen vereisten toegevoegd. De standaard vereisten uit het tekstveld worden gebruikt.</p>
+                ) : (
+                  <div className="space-y-3 max-h-64 overflow-y-auto">
+                    {weightedRequirements.map((item, index) => (
+                      <div key={index} className="flex items-center gap-3 p-3 bg-white rounded-lg border border-gray-200">
+                        <input
+                          type="text"
+                          value={item.requirement}
+                          onChange={(e) => {
+                            const updated = [...weightedRequirements];
+                            updated[index].requirement = e.target.value;
+                            setWeightedRequirements(updated);
+                          }}
+                          placeholder="bijv. Python ervaring, HBO diploma"
+                          className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-barnes-violet"
+                        />
+                        <div className="flex items-center gap-2 min-w-[140px]">
+                          <input
+                            type="range"
+                            min="1"
+                            max="10"
+                            value={item.weight}
+                            onChange={(e) => {
+                              const updated = [...weightedRequirements];
+                              updated[index].weight = parseInt(e.target.value);
+                              setWeightedRequirements(updated);
+                            }}
+                            className="flex-1"
+                          />
+                          <span className="text-sm font-medium text-barnes-dark-violet min-w-[2rem] text-right">
+                            {item.weight}
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const updated = weightedRequirements.filter((_, i) => i !== index);
+                            setWeightedRequirements(updated);
+                          }}
+                          className="text-red-500 hover:text-red-700 p-1"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium mb-2 text-barnes-dark-violet">Location</label>
@@ -368,6 +467,7 @@ export default function JobDescriptionManager({ jobs, onJobsChange }: JobDescrip
                     setIsOpen(false);
                     setEditingJob(null);
                     setFormData({ title: '', company: '', description: '', requirements: '', location: '', salary_range: '' });
+                    setWeightedRequirements([]);
                     setAiAnalysis(null);
                   }}
                   className="btn-secondary flex-1"

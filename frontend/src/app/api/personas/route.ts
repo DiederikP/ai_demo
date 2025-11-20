@@ -4,7 +4,15 @@ const BACKEND_URL = process.env.BACKEND_URL || process.env.NEXT_PUBLIC_BACKEND_U
 
 export async function GET(request: NextRequest) {
   try {
-    const backendResponse = await fetch(`${BACKEND_URL}/personas`);
+    const searchParams = request.nextUrl.searchParams;
+    const companyId = searchParams.get('company_id');
+    
+    let url = `${BACKEND_URL}/personas`;
+    if (companyId) {
+      url += `?company_id=${companyId}`;
+    }
+
+    const backendResponse = await fetch(url);
 
     if (!backendResponse.ok) {
       const errorText = await backendResponse.text();

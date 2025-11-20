@@ -6,10 +6,15 @@ export async function GET(request: NextRequest) {
   try {
     const searchParams = request.nextUrl.searchParams;
     const jobId = searchParams.get('job_id');
+    const companyId = searchParams.get('company_id');
 
     let url = `${BACKEND_URL}/candidates`;
-    if (jobId) {
-      url += `?job_id=${jobId}`;
+    const params = new URLSearchParams();
+    if (jobId) params.append('job_id', jobId);
+    if (companyId) params.append('company_id', companyId);
+    
+    if (params.toString()) {
+      url += `?${params.toString()}`;
     }
 
     const response = await fetch(url, {

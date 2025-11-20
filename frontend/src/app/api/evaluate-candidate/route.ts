@@ -39,10 +39,32 @@ export async function POST(request: NextRequest) {
     });
 
     if (!response.ok) {
-      const errorText = await response.text();
-      console.error('Evaluation error:', errorText);
+      let errorMessage = 'Evaluation failed';
+      let errorDetails: any = null;
+      try {
+        const contentType = response.headers.get('content-type');
+        if (contentType && contentType.includes('application/json')) {
+          const errorJson = await response.json();
+          errorDetails = errorJson;
+          errorMessage = errorJson.detail || errorJson.error || errorJson.message || errorMessage;
+        } else {
+          const errorText = await response.text();
+          errorMessage = errorText || errorMessage;
+        }
+      } catch (parseError) {
+        console.error('Error parsing error response:', parseError);
+        errorMessage = `Backend error: ${response.status} ${response.statusText}`;
+      }
+      // Log detailed error for debugging
+      console.error('Evaluation API error:', {
+        status: response.status,
+        statusText: response.statusText,
+        errorMessage,
+        errorDetails,
+        url: response.url
+      });
       return NextResponse.json(
-        { error: errorText || 'Evaluation failed' },
+        { error: errorMessage, success: false, details: errorDetails },
         { status: response.status }
       );
     }

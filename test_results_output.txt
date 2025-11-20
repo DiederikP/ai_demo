@@ -1,0 +1,35 @@
+==========================================
+SYSTEMATIC UI TESTING
+==========================================
+
+[0;34m1. TESTING LOGIN PAGES[0m
+----------------------------------------
+[0;32m✓[0m Company login page loads
+[0;32m✓[0m Company login page returns 200
+[0;32m✓[0m Login API endpoint responds correctly
+[0;32m✓[0m Invalid login shows error
+
+[0;34m2. TESTING NAVIGATION[0m
+----------------------------------------
+[0;32m✓[0m Admin token obtained for navigation tests
+[0;32m✓[0m Companies API works (for portal selector)
+[0;32m✓[0m Dashboard page accessible (may redirect if not logged in)
+
+[0;34m3. TESTING COMPANY PORTAL[0m
+----------------------------------------
+[0;32m✓[0m Company admin token obtained
+[0;32m✓[0m GET /candidates works for company
+   Found 41 candidates
+[0;32m✓[0m GET /job-descriptions works for company
+   Found 7 job postings
+[0;32m✓[0m GET /evaluation-results works for company
+[0;32m✓[0m GET /personas works for company
+
+[0;34m4. TESTING RECRUITER PORTAL[0m
+----------------------------------------
+[0;32m✓[0m Recruiter token obtained
+[0;32m✓[0m GET /recruiter/vacancies works
+   Found 3 vacancies (assigned + new)
+[0;32m✓[0m GET /recruiter/candidates works
+   Found 3 submitted candidates
+[0;31m✗[0m PUT /candidates/{id}/update-note failed

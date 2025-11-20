@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+const BACKEND_URL = process.env.BACKEND_URL || process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+
 export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ approvalId: string }> }
@@ -16,7 +18,7 @@ export async function PUT(
       backendFormData.append('comment', formData.get('comment') as string);
     }
 
-    const response = await fetch(`http://localhost:8000/approvals/${approvalId}`, {
+    const response = await fetch(`${BACKEND_URL}/approvals/${approvalId}`, {
       method: 'PUT',
       body: backendFormData,
     });
@@ -47,7 +49,7 @@ export async function DELETE(
   try {
     const { approvalId } = await params;
 
-    const response = await fetch(`http://localhost:8000/approvals/${approvalId}`, {
+    const response = await fetch(`${BACKEND_URL}/approvals/${approvalId}`, {
       method: 'DELETE',
     });
 

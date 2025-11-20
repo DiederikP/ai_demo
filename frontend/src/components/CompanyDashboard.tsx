@@ -3,6 +3,8 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import ReasoningPanel from './ReasoningPanel';
+import WorkflowVisualizationPopup from './WorkflowVisualizationPopup';
+import { useCompany } from '../contexts/CompanyContext';
 
 interface JobDescription {
   id: string;
@@ -31,6 +33,9 @@ interface Candidate {
   conversation_count?: number;
   preferential_job_ids?: string | null;
   company_note?: string | null;
+  evaluation_count?: number;
+  pipeline_stage?: string;
+  pipeline_status?: string;
 }
 
 export default function CompanyDashboard() {
@@ -58,6 +63,10 @@ export default function CompanyDashboard() {
   const [showTemplateModal, setShowTemplateModal] = useState(false);
   const [templateName, setTemplateName] = useState('');
   const [templateDescription, setTemplateDescription] = useState('');
+  const [showWorkflowPopup, setShowWorkflowPopup] = useState(false);
+  const [workflowTimingData, setWorkflowTimingData] = useState<any>(null);
+  const [workflowDebateData, setWorkflowDebateData] = useState<any>(null);
+  const [currentWorkflowStep, setCurrentWorkflowStep] = useState<string>('');
 
   const doesCandidateMatchJob = (candidate: Candidate, jobId?: string | null) => {
     if (!jobId) return false;
@@ -96,6 +105,18 @@ export default function CompanyDashboard() {
       console.error('Unhandled error in loadData:', error);
     });
   }, []);
+
+  // Auto-select both actions and all personas when they become available (make evaluation more intuitive)
+  useEffect(() => {
+    if (personas.length > 0 && selectedPersonas.length === 0) {
+      // Auto-select all active personas
+      setSelectedPersonas(personas.filter(p => p.is_active).map(p => p.id));
+    }
+    if (selectedActions.length === 0) {
+      // Auto-select both evaluate and debate actions
+      setSelectedActions(['evaluate', 'debate']);
+    }
+  }, [personas, selectedPersonas.length, selectedActions.length]);
 
   useEffect(() => {
     if (!selectedJob) {
@@ -160,12 +181,16 @@ export default function CompanyDashboard() {
     return { ready: false, summary: '', issues, warnings };
   }, [selectedJob, selectedPersonas, selectedCandidates, selectedActions]);
 
+  const { selectedCompany } = useCompany();
+  
   const loadData = async () => {
     try {
+      // Add company_id to all API calls for multi-portal filtering
+      const companyParam = selectedCompany?.id ? `?company_id=${selectedCompany.id}` : '';
       const [jobsRes, personasRes, candidatesRes, templatesRes] = await Promise.all([
-        fetch('/api/job-descriptions'),
-        fetch('/api/personas'),
-        fetch('/api/candidates'),
+        fetch(`/api/job-descriptions${companyParam}`),
+        fetch(`/api/personas${companyParam}`),
+        fetch(`/api/candidates${companyParam}`),
         fetch('/api/evaluation-templates')
       ]);
 
@@ -204,6 +229,13 @@ export default function CompanyDashboard() {
       setIsLoading(false);
     }
   };
+
+  // Reload data when company changes
+  useEffect(() => {
+    if (selectedCompany) {
+      loadData();
+    }
+  }, [selectedCompany?.id]);
 
   const fetchConversationInsights = async (candidateId: string, force = false) => {
     if (!force && conversationInsights[candidateId]) return;
@@ -358,17 +390,58 @@ export default function CompanyDashboard() {
       return;
     }
 
+    // Fetch conversation insights and update step
+    setReasoningSteps(prev => prev.map(step => 
+      step.title === 'Gespreksinzichten ophalen' 
+        ? { ...step, status: 'processing' as const, content: `Ophalen van gespreksinzichten...` }
+        : step
+    ));
+    
     await Promise.all(selectedCandidates.map((candidateId) => fetchConversationInsights(candidateId, true)));
+    
+    setReasoningSteps(prev => prev.map(step => 
+      step.title === 'Gespreksinzichten ophalen' 
+        ? { ...step, status: 'completed' as const, content: `Gespreksinzichten opgehaald voor ${selectedCandidates.length} kandidaat(en)` }
+        : step
+    ));
 
     setIsProcessing(true);
     setShowReasoningPanel(true);
-    setReasoningSteps([{
-      step: 1,
-      title: 'Evaluatie starten',
-      content: 'Voorbereiden van evaluatie met geselecteerde persona\'s en kandidaat',
-      timestamp: new Date().toLocaleTimeString('nl-NL'),
-      status: 'processing' as const
-    }]);
+    setShowWorkflowPopup(true); // Show workflow popup
+    setWorkflowTimingData(null);
+    setWorkflowDebateData(null);
+    setCurrentWorkflowStep('Voorbereiden...');
+    
+    // Show detailed steps that need to be done
+    const initialSteps: any[] = [
+      {
+        step: 1,
+        title: 'Configuratie valideren',
+        content: `Vacature: ${selectedJob?.title || 'Niet geselecteerd'}, ${selectedCandidates.length} kandidaat(en), ${selectedPersonas.length} digitale werknemer(s)`,
+        timestamp: new Date().toLocaleTimeString('nl-NL'),
+        status: 'completed' as const
+      },
+      {
+        step: 2,
+        title: 'Gespreksinzichten ophalen',
+        content: `Ophalen van recente gespreksinzichten voor ${selectedCandidates.length} kandidaat(en)`,
+        timestamp: new Date().toLocaleTimeString('nl-NL'),
+        status: 'processing' as const
+      }
+    ];
+    
+    // Add steps for each action
+    selectedActions.forEach((action, idx) => {
+      initialSteps.push({
+        step: initialSteps.length + 1,
+        title: `${action === 'evaluate' ? 'Evaluatie' : 'Debat'} voorbereiden`,
+        content: `${action === 'evaluate' ? 'Evaluatie' : 'Debat'} wordt voorbereid voor ${selectedCandidates.length} kandidaat(en)`,
+        timestamp: new Date().toLocaleTimeString('nl-NL'),
+        status: 'pending' as const
+      });
+    });
+    
+    setReasoningSteps(initialSteps);
 
     try {
       const resultIds: string[] = [];
@@ -377,136 +450,226 @@ export default function CompanyDashboard() {
       const totalOperations = selectedActions.length * selectedCandidates.length;
       let completedOperations = 0;
       
-      // Process each action for each candidate
-      for (const action of selectedActions) {
-        setReasoningSteps(prev => [...prev, {
-          step: prev.length + 1,
-          title: `${action === 'evaluate' ? 'Evaluatie' : 'Debat'} uitvoeren`,
-          content: `Bezig met ${action === 'evaluate' ? 'evaluatie' : 'debat'} voor ${allCandidates.find(c => selectedCandidates.includes(c.id))?.name || 'kandidaat'}`,
-          timestamp: new Date().toLocaleTimeString('nl-NL'),
-          status: 'processing' as const
-        }]);
+      // Process evaluation first (immediately), then debate in background (parallel)
+      const hasEvaluate = selectedActions.includes('evaluate');
+      const hasDebate = selectedActions.includes('debate');
+      
+      // Helper function to process a single action for a candidate
+      const processAction = async (action: string, candidateId: string): Promise<string | null> => {
+        const candidate = allCandidates.find(c => c.id === candidateId);
+        if (!candidate) return null;
+
+        const formData = new FormData();
+        formData.append('candidate_id', candidateId);
         
-        for (const candidateId of selectedCandidates) {
-          const candidate = allCandidates.find(c => c.id === candidateId);
-          if (!candidate) continue;
-
-          const formData = new FormData();
-          formData.append('candidate_id', candidateId);
-          
-          // Add job_id if a job is selected
-          if (selectedJob) {
-            formData.append('job_id', selectedJob.id);
-          }
-          
-          // Add persona prompts (include conversation insights when available)
-          selectedPersonas.forEach(personaId => {
-            const persona = personas.find(p => p.id === personaId);
-            if (persona) {
-              let personaPrompt = persona.system_prompt;
-              const insight = conversationInsights[candidateId];
-              if (insight) {
-                const lines: string[] = [];
-                if (insight.summaries?.length) {
-                  lines.push(
-                    ...insight.summaries
-                      .map((summary) => summary.trim())
-                      .filter(Boolean)
-                      .slice(0, 3)
-                  );
-                }
-                const personaKeys = [
-                  persona.name,
-                  persona.display_name,
-                  persona.display_name?.toLowerCase(),
-                  'all',
-                ].filter(Boolean) as string[];
-                personaKeys.forEach((key) => {
-                  const notes = insight.personaGuidance[key];
-                  if (notes && notes.length) {
-                    lines.push(...notes);
-                  }
-                });
-                if (lines.length) {
-                  personaPrompt += `\n\nGebruik de volgende inzichten uit recente gesprekken met de kandidaat:\n${lines
-                    .map((line) => `- ${line}`)
-                    .join('\n')}`;
-                }
+        if (selectedJob) {
+          formData.append('job_id', selectedJob.id);
+        }
+        
+        // Add persona prompts (include conversation insights when available)
+        selectedPersonas.forEach(personaId => {
+          const persona = personas.find(p => p.id === personaId);
+          if (persona) {
+            let personaPrompt = persona.system_prompt;
+            const insight = conversationInsights[candidateId];
+            if (insight) {
+              const lines: string[] = [];
+              if (insight.summaries?.length) {
+                lines.push(
+                  ...insight.summaries
+                    .map((summary) => summary.trim())
+                    .filter(Boolean)
+                    .slice(0, 3)
+                );
               }
-              formData.append(`${persona.name}_prompt`, personaPrompt);
-            }
-          });
-
-          // Use candidate's company note if checkbox is checked, otherwise use manual input
-          if (useCandidateCompanyNote && candidate.company_note) {
-            formData.append('company_note', candidate.company_note);
-          } else if (companyNote) {
-            formData.append('company_note', companyNote);
-          }
-          
-          if (companyNoteFile && !useCandidateCompanyNote) {
-            formData.append('company_note_file', companyNoteFile);
-          }
-
-          let response: Response | undefined;
-          if (action === 'evaluate') {
-            response = await fetch('/api/evaluate-candidate', {
-              method: 'POST',
-              body: formData,
-            });
-          } else if (action === 'debate') {
-            response = await fetch('/api/debate-candidate', {
-              method: 'POST',
-              body: formData,
-            });
-          } else if (action === 'compare') {
-            // Comparison will be implemented later
-            continue;
-          }
-
-          if (!response) {
-            throw new Error('No response received');
-          }
-
-          if (!response.ok) {
-            const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
-            throw new Error(errorData.error || 'Request failed');
-          }
-
-          const result = await response.json();
-          
-          // Update reasoning step with progress
-          completedOperations++;
-          setReasoningSteps(prev => {
-            const updated = [...prev];
-            const lastStep = updated[updated.length - 1];
-            if (lastStep && lastStep.status === 'processing') {
-              lastStep.status = 'completed';
-              const candidateName = candidate.name || 'kandidaat';
-              lastStep.content = `${action === 'evaluate' ? 'Evaluatie' : 'Debat'} voor ${candidateName} succesvol voltooid (${completedOperations}/${totalOperations})`;
-            }
-            return updated;
-          });
-          
-          // Get the saved result ID from the response
-          if (result.success && result.result_id) {
-            resultIds.push(result.result_id);
-          } else if (result.success) {
-            // Fallback: try to fetch if result_id not in response
-            await new Promise(resolve => setTimeout(resolve, 1000));
-            const resultsResponse = await fetch(`/api/evaluation-results?candidate_id=${candidateId}&result_type=${action === 'evaluate' ? 'evaluation' : 'debate'}&job_id=${selectedJob?.id || ''}`);
-            if (resultsResponse.ok) {
-              const resultsData = await resultsResponse.json();
-              const savedResult = resultsData.results?.[0];
-              if (savedResult) {
-                resultIds.push(savedResult.id);
+              const personaKeys = [
+                persona.name,
+                persona.display_name,
+                persona.display_name?.toLowerCase(),
+                'all',
+              ].filter(Boolean) as string[];
+              personaKeys.forEach((key) => {
+                const notes = insight.personaGuidance[key];
+                if (notes && notes.length) {
+                  lines.push(...notes);
+                }
+              });
+              if (lines.length) {
+                personaPrompt += `\n\nGebruik de volgende inzichten uit recente gesprekken met de kandidaat:\n${lines
+                  .map((line) => `- ${line}`)
+                  .join('\n')}`;
               }
+            }
+            formData.append(`${persona.name}_prompt`, personaPrompt);
+          }
+        });
+
+        // Use candidate's company note if checkbox is checked, otherwise use manual input
+        if (useCandidateCompanyNote && candidate.company_note) {
+          formData.append('company_note', candidate.company_note);
+        } else if (companyNote) {
+          formData.append('company_note', companyNote);
+        }
+        
+        if (companyNoteFile && !useCandidateCompanyNote) {
+          formData.append('company_note_file', companyNoteFile);
+        }
+
+        let response: Response | undefined;
+        if (action === 'evaluate') {
+          response = await fetch('/api/evaluate-candidate', {
+            method: 'POST',
+            body: formData,
+          });
+        } else if (action === 'debate') {
+          response = await fetch('/api/debate-candidate', {
+            method: 'POST',
+            body: formData,
+          });
+        } else {
+          return null;
+        }
+
+        if (!response || !response.ok) {
+          let errorMessage = 'Request failed';
+          try {
+            const contentType = response?.headers.get('content-type');
+            if (contentType && contentType.includes('application/json')) {
+              const errorData = await response.json();
+              errorMessage = errorData.error || errorData.detail || errorMessage;
+            } else {
+              const errorText = await response?.text();
+              errorMessage = errorText || errorMessage;
+            }
+          } catch (parseError) {
+            console.error('Error parsing error response:', parseError);
+            errorMessage = `Server error: ${response?.status} ${response?.statusText}`;
+          }
+          throw new Error(errorMessage);
+        }
+
+        const result = await response.json();
+        
+        // Extract timing data from result (for debate actions)
+        if (action === 'debate' && result.timing_data) {
+          const timingData = result.timing_data;
+          if (timingData.steps && Array.isArray(timingData.steps) && timingData.steps.length > 0) {
+            const processedTiming = {
+              ...timingData,
+              start_time: timingData.start_time 
+                ? (typeof timingData.start_time === 'number' 
+                    ? (timingData.start_time > 1000000000 ? timingData.start_time : timingData.start_time * 1000)
+                    : timingData.start_time)
+                : Date.now(),
+              steps: timingData.steps.map((step: any) => ({
+                ...step,
+                timestamp: step.timestamp 
+                  ? (typeof step.timestamp === 'number' 
+                      ? (step.timestamp > 1000000000 ? step.timestamp : step.timestamp * 1000)
+                      : step.timestamp)
+                  : Date.now()
+              }))
+            };
+            setWorkflowTimingData(processedTiming);
+          }
+          
+          if (result.debate || result.transcript) {
+            try {
+              const debateContent = result.debate || result.transcript;
+              const debateArray = typeof debateContent === 'string' ? JSON.parse(debateContent) : debateContent;
+              setWorkflowDebateData(debateArray);
+            } catch (e) {
+              setWorkflowDebateData(result.debate || result.transcript);
             }
           }
         }
+        
+        // Get the saved result ID from the response
+        if (result.success && result.result_id) {
+          return result.result_id;
+        } else if (result.success) {
+          // Fallback: try to fetch if result_id not in response
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          const resultsResponse = await fetch(`/api/evaluation-results?candidate_id=${candidateId}&result_type=${action === 'evaluate' ? 'evaluation' : 'debate'}&job_id=${selectedJob?.id || ''}`);
+          if (resultsResponse.ok) {
+            const resultsData = await resultsResponse.json();
+            const savedResult = resultsData.results?.[0];
+            if (savedResult) {
+              return savedResult.id;
+            }
+          }
+        }
+        return null;
+      };
+      
+      // Start evaluation immediately if selected
+      if (hasEvaluate) {
+        setReasoningSteps(prev => prev.map(step => 
+          step.title.includes('Evaluatie voorbereiden')
+            ? { ...step, status: 'processing' as const, content: `Evaluatie wordt gestart voor ${selectedCandidates.length} kandidaat(en)...` }
+            : step
+        ));
+        setCurrentWorkflowStep('Evaluatie starten...');
+        
+        // Process all evaluations in parallel
+        const evaluationPromises = selectedCandidates.map(candidateId => 
+          processAction('evaluate', candidateId)
+        );
+        
+        const evaluationResults = await Promise.all(evaluationPromises);
+        evaluationResults.forEach((resultId, idx) => {
+          if (resultId) resultIds.push(resultId);
+          completedOperations++;
+          setReasoningSteps(prev => prev.map(step => 
+            step.title.includes('Evaluatie')
+              ? { ...step, status: 'completed' as const, content: `Evaluatie voltooid voor ${allCandidates.find(c => selectedCandidates.includes(c.id))?.name || 'kandidaat'} (${completedOperations}/${totalOperations})` }
+              : step
+          ));
+        });
+        
+        setCurrentWorkflowStep('Evaluatie voltooid');
       }
-
-      // Update final reasoning step
+      
+      // Start debate in background (parallel, non-blocking)
+      if (hasDebate) {
+        setReasoningSteps(prev => prev.map(step => 
+          step.title.includes('Debat voorbereiden')
+            ? { ...step, status: 'processing' as const, content: `Debat wordt voorbereid (draait op achtergrond)...` }
+            : step
+        ));
+        setCurrentWorkflowStep('Debat starten (achtergrond)...');
+        
+        // Process debates in background (don't await, but track)
+        const debatePromises = selectedCandidates.map(async (candidateId) => {
+          try {
+            const resultId = await processAction('debate', candidateId);
+            if (resultId) resultIds.push(resultId);
+            completedOperations++;
+            setReasoningSteps(prev => prev.map(step => 
+              step.title.includes('Debat')
+                ? { ...step, status: 'completed' as const, content: `Debat voltooid voor ${allCandidates.find(c => c.id === candidateId)?.name || 'kandidaat'} (${completedOperations}/${totalOperations})` }
+                : step
+            ));
+            setCurrentWorkflowStep('Debat voltooid');
+          } catch (error: any) {
+            console.error('Debate error:', error);
+            setReasoningSteps(prev => [...prev, {
+              step: prev.length + 1,
+              title: 'Debat fout',
+              content: `Fout bij debat: ${error.message || 'Onbekende fout'}`,
+              timestamp: new Date().toLocaleTimeString('nl-NL'),
+              status: 'error' as const
+            }]);
+          }
+        });
+        
+        // Don't await debates - let them run in background
+        Promise.allSettled(debatePromises).then(() => {
+          setCurrentWorkflowStep('Alle taken voltooid');
+        });
+      }
+      
+      // Update final reasoning step after all operations
       setReasoningSteps(prev => [...prev, {
         step: prev.length + 1,
         title: 'Voltooid',
@@ -515,19 +678,26 @@ export default function CompanyDashboard() {
         status: 'completed' as const
       }]);
       
+      setCurrentWorkflowStep('Voltooid!');
+      setIsProcessing(false);
+      
       // Navigate directly to the result detail page (or first result if multiple)
       if (resultIds.length > 0) {
-        // Navigate to the first result's detail page immediately
+        // Keep popup open for a bit, then navigate
         setTimeout(() => {
+          setShowWorkflowPopup(false);
           router.push(`/company/results/${resultIds[0]}`);
-        }, 1500);
+        }, 2000);
       } else {
         // If no results were saved, show error and reload data
+        setShowWorkflowPopup(false);
         alert('Waarschuwing: Resultaten konden niet worden opgeslagen. Probeer het opnieuw.');
         await loadData();
       }
     } catch (error: any) {
       console.error('Error processing evaluation:', error);
+      setShowWorkflowPopup(false);
+      setCurrentWorkflowStep('');
       setReasoningSteps(prev => [...prev, {
         step: prev.length + 1,
         title: 'Fout opgetreden',
@@ -554,48 +724,7 @@ export default function CompanyDashboard() {
         </p>
       </div>
 
-      {/* Validation Summary Card */}
-      {(validationSummary.ready || validationSummary.issues.length > 0 || validationSummary.warnings.length > 0) && (
-        <div className={`mb-6 p-4 rounded-xl border-2 ${
-          validationSummary.ready && validationSummary.issues.length === 0
-            ? 'bg-green-50 border-green-200'
-            : validationSummary.issues.length > 0
-            ? 'bg-red-50 border-red-200'
-            : 'bg-yellow-50 border-yellow-200'
-        }`}>
-          <div className="flex items-start gap-3">
-            <div className="text-2xl">
-              {validationSummary.ready && validationSummary.issues.length === 0 ? '✅' : validationSummary.issues.length > 0 ? '❌' : '⚠️'}
-            </div>
-            <div className="flex-1">
-              {validationSummary.ready && validationSummary.issues.length === 0 ? (
-                <>
-                  <h3 className="font-semibold text-green-800 mb-1">Klaar om te starten</h3>
-                  <p className="text-sm text-green-700">{validationSummary.summary}</p>
-                </>
-              ) : validationSummary.issues.length > 0 ? (
-                <>
-                  <h3 className="font-semibold text-red-800 mb-1">Niet klaar</h3>
-                  <ul className="text-sm text-red-700 list-disc list-inside space-y-1">
-                    {validationSummary.issues.map((issue, idx) => (
-                      <li key={idx}>{issue}</li>
-                    ))}
-                  </ul>
-                </>
-              ) : (
-                <>
-                  <h3 className="font-semibold text-yellow-800 mb-1">Let op</h3>
-                  <ul className="text-sm text-yellow-700 list-disc list-inside space-y-1">
-                    {validationSummary.warnings.map((warning, idx) => (
-                      <li key={idx}>{warning}</li>
-                    ))}
-                  </ul>
-                </>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Validation Summary Card - Removed red box per user request */}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
         {/* Step 1: Select Vacature */}
@@ -734,33 +863,44 @@ export default function CompanyDashboard() {
                     const isCompareMode = selectedActions.includes('compare');
                     const isSingleMode = selectedActions.some(a => a === 'evaluate' || a === 'debate');
                     const maxSelection = isCompareMode ? undefined : (isSingleMode ? 1 : undefined);
-                    const canSelect = maxSelection ? selectedCandidates.length < maxSelection || selectedCandidates.includes(candidate.id) : true;
+                    const isSelected = selectedCandidates.includes(candidate.id);
+                    const canSelect = maxSelection ? selectedCandidates.length < maxSelection || isSelected : true;
                     
                     return (
                       <label 
                         key={candidate.id} 
-                        className={`flex items-center justify-between gap-3 p-3 hover:bg-gray-50 rounded-lg cursor-pointer ${!canSelect ? 'opacity-50' : ''}`}
+                        className={`flex items-center justify-between gap-3 p-3 hover:bg-gray-50 rounded-lg cursor-pointer transition-colors ${!canSelect ? 'opacity-50 cursor-not-allowed' : ''} ${isSelected ? 'bg-barnes-violet/5 border border-barnes-violet/30' : ''}`}
                       >
-                        <div className="flex items-center gap-3">
+                        <div className="flex items-center gap-3 flex-1">
                           <input
                             type={isCompareMode ? 'checkbox' : 'radio'}
                             name={isCompareMode ? 'candidates' : 'candidate'}
-                            checked={selectedCandidates.includes(candidate.id)}
+                            checked={isSelected}
                             onChange={async (e) => {
                               if (isCompareMode) {
+                                // Checkbox mode for comparison - toggle selection
                                 if (e.target.checked) {
-                                  setSelectedCandidates([...selectedCandidates, candidate.id]);
-                                  await fetchConversationInsights(candidate.id);
+                                  if (!isSelected) {
+                                    setSelectedCandidates([...selectedCandidates, candidate.id]);
+                                    await fetchConversationInsights(candidate.id);
+                                  }
                                 } else {
                                   setSelectedCandidates(selectedCandidates.filter(id => id !== candidate.id));
                                 }
-                              } else if (e.target.checked) {
-                                setSelectedCandidates([candidate.id]);
-                                await fetchConversationInsights(candidate.id);
+                              } else {
+                                // Radio mode for single selection - toggle if already selected
+                                if (isSelected) {
+                                  // Deselect if clicking the same candidate
+                                  setSelectedCandidates([]);
+                                } else {
+                                  // Select this candidate (deselect others)
+                                  setSelectedCandidates([candidate.id]);
+                                  await fetchConversationInsights(candidate.id);
+                                }
                               }
                             }}
+                            className="w-5 h-5 text-barnes-violet focus:ring-barnes-violet rounded cursor-pointer"
                             disabled={!canSelect}
-                            className="w-5 h-5 text-barnes-violet focus:ring-barnes-violet rounded"
                           />
                           <div>
                             <span className="text-barnes-dark-gray font-medium">{candidate.name}</span>
@@ -774,11 +914,23 @@ export default function CompanyDashboard() {
                             )}
                           </div>
                         </div>
-                        {(candidate.conversation_count ?? 0) > 0 && (
-                          <span className="text-xs text-barnes-violet bg-barnes-violet/10 px-2 py-1 rounded-full">
-                            {candidate.conversation_count} gesprek{(candidate.conversation_count ?? 0) !== 1 ? 'ken' : ''}
-                          </span>
-                        )}
+                        <div className="flex items-center gap-2">
+                          {(candidate.conversation_count ?? 0) > 0 && (
+                            <span className="text-xs text-barnes-violet bg-barnes-violet/10 px-2 py-1 rounded-full">
+                              {candidate.conversation_count} gesprek{(candidate.conversation_count ?? 0) !== 1 ? 'ken' : ''}
+                            </span>
+                          )}
+                          {(candidate.evaluation_count ?? 0) > 0 && (
+                            <span className="text-xs text-green-600 bg-green-50 px-2 py-1 rounded-full">
+                              ✓ Geëvalueerd
+                            </span>
+                          )}
+                          {(candidate.evaluation_count ?? 0) === 0 && selectedCandidates.includes(candidate.id) && (
+                            <span className="text-xs text-amber-600 bg-amber-50 px-2 py-1 rounded-full">
+                              Nog niet geëvalueerd
+                            </span>
+                          )}
+                        </div>
                       </label>
                     );
                   })}
@@ -786,6 +938,60 @@ export default function CompanyDashboard() {
               )}
             </>
           )}
+          
+          {/* Other Candidates Status Section - Show when a candidate is selected */}
+          {selectedCandidates.length > 0 && selectedJob && (
+            <div className="mt-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+              <h3 className="text-sm font-semibold text-barnes-dark-violet mb-3">
+                Andere kandidaten voor {selectedJob.title}:
+              </h3>
+              <div className="space-y-2 max-h-48 overflow-y-auto">
+                {jobCandidates
+                  .filter(c => !selectedCandidates.includes(c.id))
+                  .slice(0, 10)
+                  .map(candidate => {
+                    const hasEvaluation = (candidate.evaluation_count ?? 0) > 0;
+                    const status = hasEvaluation ? 'Geëvalueerd' : 'Nog niet geëvalueerd';
+                    const statusColor = hasEvaluation ? 'text-green-600' : 'text-amber-600';
+                    
+                    return (
+                      <div
+                        key={candidate.id}
+                        className="flex items-center justify-between p-2 bg-white rounded border border-gray-200 hover:border-blue-300 transition-colors"
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-medium text-barnes-dark-gray">{candidate.name}</span>
+                          <span className={`text-xs ${statusColor}`}>— {status}</span>
+                        </div>
+                        <button
+                          onClick={() => {
+                            const isCompareMode = selectedActions.includes('compare');
+                            const isSingleMode = selectedActions.some(a => a === 'evaluate' || a === 'debate');
+                            
+                            if (isCompareMode) {
+                              if (!selectedCandidates.includes(candidate.id)) {
+                                setSelectedCandidates([...selectedCandidates, candidate.id]);
+                                fetchConversationInsights(candidate.id);
+                              }
+                            } else if (isSingleMode) {
+                              setSelectedCandidates([candidate.id]);
+                              fetchConversationInsights(candidate.id);
+                            }
+                          }}
+                          className="text-xs text-barnes-violet hover:text-barnes-dark-violet hover:underline"
+                        >
+                          Selecteren
+                        </button>
+                      </div>
+                    );
+                  })}
+                {jobCandidates.filter(c => !selectedCandidates.includes(c.id)).length === 0 && (
+                  <p className="text-xs text-barnes-dark-gray">Geen andere kandidaten voor deze vacature</p>
+                )}
+              </div>
+            </div>
+          )}
+          
           {selectedActions.includes('compare') && (
             <p className="text-xs text-barnes-dark-gray mt-2">Selecteer minimaal 2 kandidaten voor vergelijking</p>
           )}
@@ -1016,6 +1222,18 @@ export default function CompanyDashboard() {
         steps={reasoningSteps}
         isVisible={showReasoningPanel}
         onClose={() => setShowReasoningPanel(false)}
+      />
+
+      {/* Workflow Visualization Popup */}
+      <WorkflowVisualizationPopup
+        isOpen={showWorkflowPopup}
+        onClose={() => setShowWorkflowPopup(false)}
+        timingData={workflowTimingData}
+        debateData={workflowDebateData}
+        isProcessing={isProcessing}
+        currentStep={currentWorkflowStep}
+        personas={personas}
+        selectedPersonas={selectedPersonas}
       />
     </div>
   );

@@ -1,7 +1,8 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
+import { useCompany } from '../contexts/CompanyContext';
 
 interface JobDescription {
   id: string;
@@ -13,6 +14,9 @@ interface JobDescription {
   salary_range: string;
   created_at: string;
   timeline_stage?: string | null;
+  is_active?: boolean;  // Active/Inactive grouping
+  weighted_requirements?: string | null;  // JSON string
+  assigned_agency_id?: string | null;
 }
 
 interface JobStats {
@@ -48,42 +52,42 @@ export default function CompanyVacatures() {
   });
   const [isSavingConversation, setIsSavingConversation] = useState(false);
   const [draggedJobId, setDraggedJobId] = useState<string | null>(null);
-  const [dragOverStage, setDragOverStage] = useState<TimelineStageKey | null>(null);
+  const [dragOverStatus, setDragOverStatus] = useState<'active' | 'inactive' | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const router = useRouter();
+  const { selectedCompany } = useCompany();
 
-  useEffect(() => {
-    loadJobs();
-  }, []);
-
-  useEffect(() => {
-    if (jobs.length > 0) {
-      loadJobStats();
-    }
-  }, [jobs]);
-
-  const loadJobs = async () => {
+  const loadJobs = useCallback(async () => {
     try {
-      const response = await fetch('/api/job-descriptions');
+      const { getAuthHeaders } = await import('../lib/auth');
+      const companyParam = selectedCompany?.id ? `?company_id=${selectedCompany.id}` : '';
+      const headers = getAuthHeaders();
+      const response = await fetch(`/api/job-descriptions${companyParam}`, { headers });
       if (response.ok) {
         const data = await response.json();
         setJobs(data.jobs || []);
+      } else {
+        const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+        console.error('Error loading jobs:', response.status, response.statusText, errorData);
       }
     } catch (error) {
       console.error('Error loading jobs:', error);
     }
-  };
+  }, [selectedCompany]);
 
-  const loadJobStats = async () => {
+  const loadJobStats = useCallback(async () => {
     try {
+      const { getAuthHeaders } = await import('../lib/auth');
+      const headers = getAuthHeaders();
       const stats: Record<string, JobStats> = {};
       const candidateMap: Record<string, Candidate[]> = {};
       
       // Parallelize all API calls for better performance
+      const companyParam = selectedCompany?.id ? `&company_id=${selectedCompany.id}` : '';
       const statsPromises = jobs.map(async (job) => {
         const [candidatesRes, resultsRes] = await Promise.all([
-          fetch(`/api/candidates?job_id=${job.id}`),
-          fetch(`/api/evaluation-results?job_id=${job.id}`)
+          fetch(`/api/candidates?job_id=${job.id}${companyParam}`, { headers }),
+          fetch(`/api/evaluation-results?job_id=${job.id}${companyParam}`, { headers })
         ]);
         
         const candidatesData = candidatesRes.ok ? await candidatesRes.json() : { candidates: [] };
@@ -135,7 +139,17 @@ export default function CompanyVacatures() {
     } catch (error) {
       console.error('Error loading job stats:', error);
     }
-  };
+  }, [jobs, selectedCompany]);
+
+  useEffect(() => {
+    loadJobs();
+  }, [loadJobs]);
+
+  useEffect(() => {
+    if (jobs.length > 0) {
+      loadJobStats();
+    }
+  }, [jobs, loadJobStats]);
 
   const formatDays = (days: number) => {
     if (days === 0) return 'Vandaag';
@@ -196,28 +210,37 @@ export default function CompanyVacatures() {
     }
   };
 
-  type TimelineStageKey = 'waiting' | 'inProgress' | 'afterFirst' | 'multiRound' | 'completed';
+  // Grouping: Active/Inactive instead of workflow stages
+  const getJobStatus = (job: JobDescription): 'active' | 'inactive' => {
+    // Check if job has is_active flag, default to active if not set
+    return job.is_active === false ? 'inactive' : 'active';
+  };
 
-  const timelineStages: { key: TimelineStageKey; title: string; description: string }[] = [
-    { key: 'waiting', title: 'Vacatures wachtend op 1e actie', description: 'Nog geen evaluaties of gesprekken gestart.' },
-    { key: 'inProgress', title: 'Vacatures in behandeling', description: 'Evaluaties of debatten zijn gestart.' },
-    { key: 'afterFirst', title: 'Vacatures na 1e gesprek', description: 'Minimaal één gesprek vastgelegd.' },
-    { key: 'multiRound', title: 'Potentieel 2e en 3e gesprek', description: 'Meerdere feedbackmomenten ingepland.' },
-    { key: 'completed', title: 'Gesprekken afgerond / aanbieding', description: 'Volledige gesprekscyclus afgerond.' },
-  ];
-
-  const getStageForJob = (job: JobDescription, stats?: JobStats): TimelineStageKey => {
-    // If job has a manual timeline_stage override, use that
-    if (job.timeline_stage && ['waiting', 'inProgress', 'afterFirst', 'multiRound', 'completed'].includes(job.timeline_stage)) {
-      return job.timeline_stage as TimelineStageKey;
+  const toggleJobActiveStatus = async (jobId: string, currentStatus: 'active' | 'inactive') => {
+    try {
+      const newStatus = currentStatus === 'active' ? false : true;
+      
+      const response = await fetch(`/api/job-descriptions/${jobId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ is_active: newStatus })
+      });
+      
+      if (!response.ok) {
+        throw new Error('Failed to update job status');
+      }
+      
+      // Update local state
+      const updatedJobs = jobs.map(j => 
+        j.id === jobId ? { ...j, is_active: newStatus } : j
+      );
+      setJobs(updatedJobs);
+      
+      await loadJobStats();
+    } catch (error) {
+      console.error('Error updating job status:', error);
+      alert('Kon vacature status niet bijwerken. Probeer het opnieuw.');
     }
-    // Otherwise, calculate from stats
-    if (!stats) return 'waiting';
-    if (stats.evaluations_count === 0 && stats.debates_count === 0 && stats.conversation_rounds === 0) return 'waiting';
-    if (stats.conversation_rounds === 0) return 'inProgress';
-    if (stats.conversation_rounds === 1) return 'afterFirst';
-    if (stats.conversation_rounds >= 2 && stats.conversation_rounds < 4) return 'multiRound';
-    return 'completed';
   };
 
   // Removed categorizeJobs - now using direct filtering in render
@@ -238,57 +261,55 @@ export default function CompanyVacatures() {
     e.dataTransfer.setData('text/plain', jobId);
   };
 
-  const handleDragOver = (e: React.DragEvent, stageKey: TimelineStageKey) => {
+  const handleDragOver = (e: React.DragEvent, status: 'active' | 'inactive') => {
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
-    setDragOverStage(stageKey);
+    setDragOverStatus(status);
   };
 
   const handleDragLeave = () => {
-    setDragOverStage(null);
+    setDragOverStatus(null);
   };
 
-  const handleDrop = async (e: React.DragEvent, targetStage: TimelineStageKey) => {
+  const handleDrop = async (e: React.DragEvent, targetStatus: 'active' | 'inactive') => {
     e.preventDefault();
-    setDragOverStage(null);
+    setDragOverStatus(null);
     
     if (!draggedJobId) return;
     
     const job = jobs.find(j => j.id === draggedJobId);
     if (!job) return;
     
-    // Don't update if already in the same stage
-    const currentStage = getStageForJob(job, jobStats[job.id]);
-    if (currentStage === targetStage) {
+    // Don't update if already in the same status
+    const currentStatus = getJobStatus(job);
+    if (currentStatus === targetStatus) {
       setDraggedJobId(null);
       return;
     }
     
     try {
-      // Update job timeline_stage via API
-      const formData = new FormData();
-      formData.append('timeline_stage', targetStage);
-      
+      // Update job is_active via API
       const response = await fetch(`/api/job-descriptions/${draggedJobId}`, {
         method: 'PUT',
-        body: formData
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ is_active: targetStatus === 'active' })
       });
       
       if (!response.ok) {
-        throw new Error('Failed to update job stage');
+        throw new Error('Failed to update job status');
       }
       
       // Update local state
       const updatedJobs = jobs.map(j => 
-        j.id === draggedJobId ? { ...j, timeline_stage: targetStage } : j
+        j.id === draggedJobId ? { ...j, is_active: targetStatus === 'active' } : j
       );
       setJobs(updatedJobs);
       
       // Reload stats to reflect changes
       await loadJobStats();
     } catch (error) {
-      console.error('Error updating job stage:', error);
-      alert('Kon vacature stage niet bijwerken. Probeer het opnieuw.');
+      console.error('Error updating job status:', error);
+      alert('Kon vacature status niet bijwerken. Probeer het opnieuw.');
     } finally {
       setDraggedJobId(null);
     }
@@ -296,19 +317,28 @@ export default function CompanyVacatures() {
 
   const handleDragEnd = () => {
     setDraggedJobId(null);
-    setDragOverStage(null);
+    setDragOverStatus(null);
   };
 
-  const renderJobCard = (job: JobDescription, stageKey: TimelineStageKey) => {
-    const stats = jobStats[job.id];
-    if (!stats) return null;
+  const renderJobCard = (job: JobDescription) => {
+    const stats = jobStats[job.id] || {
+      job_id: job.id,
+      total_candidates: 0,
+      unique_candidates: 0,
+      evaluations_count: 0,
+      debates_count: 0,
+      days_posted: 0,
+      conversation_rounds: 0,
+      status: 'waiting' as const
+    };
     const jobCandidates = jobCandidateMap[job.id] || [];
     const canAddConversation = jobCandidates.length > 0;
+    const jobStatus = getJobStatus(job);
 
     const statusBadge =
-      stageKey !== 'waiting'
-        ? 'bg-gradient-to-r from-barnes-violet/20 to-barnes-violet/5 border border-barnes-violet/30 shadow-sm'
-        : 'bg-white border border-dashed border-gray-300';
+      jobStatus === 'active'
+        ? 'bg-gradient-to-r from-green-50 to-green-100/50 border border-green-200 shadow-sm'
+        : 'bg-gray-50 border border-gray-200 opacity-75';
 
     return (
       <div
@@ -316,11 +346,26 @@ export default function CompanyVacatures() {
         draggable
         onDragStart={(e) => handleDragStart(e, job.id)}
         onDragEnd={handleDragEnd}
-        className={`rounded-2xl p-4 cursor-move transition-all duration-200 hover:shadow-md ${statusBadge} min-w-0 ${
+        className={`rounded-2xl p-4 cursor-move transition-all duration-200 hover:shadow-md ${statusBadge} min-w-0 relative group ${
           draggedJobId === job.id ? 'opacity-50 scale-95' : ''
         }`}
-        onClick={() => router.push(`/company/vacatures/${job.id}`)}
       >
+        {/* Toggle Active/Inactive button - appears on hover */}
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            toggleJobActiveStatus(job.id, jobStatus);
+          }}
+          className={`absolute top-2 right-2 w-6 h-6 rounded-full text-white opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-xs z-10 ${
+            jobStatus === 'active' 
+              ? 'bg-orange-500 hover:bg-orange-600' 
+              : 'bg-green-500 hover:bg-green-600'
+          }`}
+          title={jobStatus === 'active' ? 'Deactiveren' : 'Activeren'}
+        >
+          {jobStatus === 'active' ? '−' : '+'}
+        </button>
+        <div onClick={() => router.push(`/company/vacatures/${job.id}`)}>
         <div className="flex justify-between items-start mb-3 gap-2">
           <div className="min-w-0 flex-1">
             <h3 className="text-base font-semibold text-barnes-dark-violet truncate">{job.title}</h3>
@@ -356,6 +401,50 @@ export default function CompanyVacatures() {
             </div>
           )}
         </div>
+        
+        {/* Candidate Progress Visualization */}
+        {jobCandidates.length > 0 && (
+          <div className="mt-3 pt-3 border-t border-gray-200">
+            <p className="text-xs text-barnes-dark-gray mb-2">Kandidaat voortgang:</p>
+            <div className="space-y-1.5">
+              {jobCandidates.slice(0, 3).map((candidate) => {
+                const candidateResults = jobStats[job.id]?.evaluations_count || 0;
+                const hasEvaluation = candidateResults > 0;
+                const hasDebate = (jobStats[job.id]?.debates_count || 0) > 0;
+                const progress = [
+                  hasEvaluation ? '✓' : '○',
+                  hasDebate ? '✓' : '○',
+                  candidate.conversation_count && candidate.conversation_count > 0 ? '✓' : '○'
+                ];
+                return (
+                  <div key={candidate.id} className="flex items-center justify-between text-xs">
+                    <span className="text-barnes-dark-gray truncate max-w-[100px]">{candidate.name}</span>
+                    <div className="flex gap-1">
+                      {progress.map((status, idx) => (
+                        <span
+                          key={idx}
+                          className={`w-4 h-4 rounded-full flex items-center justify-center text-[8px] ${
+                            status === '✓'
+                              ? 'bg-green-500 text-white'
+                              : 'bg-gray-200 text-gray-400'
+                          }`}
+                          title={idx === 0 ? 'Evaluatie' : idx === 1 ? 'Debat' : 'Gesprek'}
+                        >
+                          {status}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+              {jobCandidates.length > 3 && (
+                <p className="text-xs text-barnes-dark-gray text-center">
+                  +{jobCandidates.length - 3} meer
+                </p>
+              )}
+            </div>
+          </div>
+        )}
         <div className="mt-3 pt-3 border-t border-gray-200">
           <button
             onClick={(e) => {
@@ -373,6 +462,7 @@ export default function CompanyVacatures() {
           >
             + Feedbackronde
           </button>
+        </div>
         </div>
       </div>
     );
@@ -437,32 +527,75 @@ export default function CompanyVacatures() {
 
       {filteredJobs.length > 0 ? (
         <div className="space-y-6">
-          {timelineStages.map(stage => {
-            const stageJobs = filteredJobs.filter(job => getStageForJob(job, jobStats[job.id]) === stage.key);
-            if (stageJobs.length === 0) return null;
+          {/* Active Vacancies */}
+          {(() => {
+            const activeJobs = filteredJobs.filter(job => getJobStatus(job) === 'active');
+            if (activeJobs.length === 0) return null;
             
             return (
-              <section
-                key={stage.key}
-                onDragOver={(e) => handleDragOver(e, stage.key)}
-                onDragLeave={handleDragLeave}
-                onDrop={(e) => handleDrop(e, stage.key)}
+              <section 
                 className={`bg-white rounded-2xl border-2 p-6 shadow-sm transition-all ${
-                  dragOverStage === stage.key
-                    ? 'border-barnes-violet border-dashed bg-barnes-violet/5'
-                    : 'border-gray-200'
+                  dragOverStatus === 'active' 
+                    ? 'border-green-400 bg-green-50 scale-[1.02]' 
+                    : 'border-green-200'
                 }`}
+                onDragOver={(e) => handleDragOver(e, 'active')}
+                onDragLeave={handleDragLeave}
+                onDrop={(e) => handleDrop(e, 'active')}
               >
                 <div className="mb-4">
-                  <h2 className="text-lg font-semibold text-barnes-dark-violet mb-1">{stage.title}</h2>
-                  <p className="text-sm text-barnes-dark-gray">{stage.description}</p>
+                  <h2 className="text-lg font-semibold text-barnes-dark-violet mb-1">
+                    Actieve Vacatures ({activeJobs.length})
+                  </h2>
+                  <p className="text-sm text-barnes-dark-gray">Vacatures die momenteel open staan en actief worden beoordeeld</p>
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 md:gap-4">
-                  {stageJobs.map(job => renderJobCard(job, stage.key as TimelineStageKey))}
+                <div className={`grid gap-3 md:gap-4 ${
+                  activeJobs.length <= 5 
+                    ? 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3'
+                    : activeJobs.length <= 10
+                    ? 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-4'
+                    : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-5'
+                }`}>
+                  {activeJobs.map(job => renderJobCard(job))}
                 </div>
               </section>
             );
-          })}
+          })()}
+          
+          {/* Inactive Vacatures */}
+          {(() => {
+            const inactiveJobs = filteredJobs.filter(job => getJobStatus(job) === 'inactive');
+            if (inactiveJobs.length === 0) return null;
+            
+            return (
+              <section 
+                className={`bg-white rounded-2xl border-2 p-6 shadow-sm opacity-75 transition-all ${
+                  dragOverStatus === 'inactive' 
+                    ? 'border-gray-400 bg-gray-100 scale-[1.02] opacity-90' 
+                    : 'border-gray-200'
+                }`}
+                onDragOver={(e) => handleDragOver(e, 'inactive')}
+                onDragLeave={handleDragLeave}
+                onDrop={(e) => handleDrop(e, 'inactive')}
+              >
+                <div className="mb-4">
+                  <h2 className="text-lg font-semibold text-barnes-dark-gray mb-1">
+                    Inactieve Vacatures ({inactiveJobs.length})
+                  </h2>
+                  <p className="text-sm text-barnes-dark-gray">Gesloten of gepauzeerde vacatures</p>
+                </div>
+                <div className={`grid gap-3 md:gap-4 ${
+                  inactiveJobs.length <= 5 
+                    ? 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3'
+                    : inactiveJobs.length <= 10
+                    ? 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-4'
+                    : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-5'
+                }`}>
+                  {inactiveJobs.map(job => renderJobCard(job))}
+                </div>
+              </section>
+            );
+          })()}
         </div>
       ) : (
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8 text-center">

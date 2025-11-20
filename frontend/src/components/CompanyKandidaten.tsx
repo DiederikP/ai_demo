@@ -4,6 +4,7 @@ import { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 import EmptyState from './EmptyState';
 import AdvancedFilter from './AdvancedFilter';
+import { useCompany } from '../contexts/CompanyContext';
 
 interface Candidate {
   id: string;
@@ -19,6 +20,23 @@ interface Candidate {
   created_at: string;
   conversation_count?: number;
   company_note?: string | null;
+  // Extended fields
+  motivation_reason?: string | null;
+  test_results?: string | null;
+  age?: number | null;
+  years_experience?: number | null;
+  skill_tags?: string | null;  // JSON array
+  prior_job_titles?: string | null;  // JSON array
+  certifications?: string | null;  // JSON array
+  education_level?: string | null;
+  location?: string | null;
+  communication_level?: string | null;
+  availability_per_week?: number | null;
+  notice_period?: string | null;
+  salary_expectation?: number | null;
+  source?: string | null;
+  pipeline_stage?: string | null;
+  pipeline_status?: string | null;
 }
 
 interface Job {
@@ -39,11 +57,37 @@ export default function CompanyKandidaten() {
   const [candidateName, setCandidateName] = useState('');
   const [candidateEmail, setCandidateEmail] = useState('');
   const [isUploading, setIsUploading] = useState(false);
+  // Extended candidate fields
+  const [candidateForm, setCandidateForm] = useState({
+    motivation_reason: '',
+    test_results: '',
+    age: '',
+    years_experience: '',
+    skill_tags: '',  // Comma-separated, will convert to JSON
+    prior_job_titles: '',  // Comma-separated, will convert to JSON
+    certifications: '',  // Comma-separated, will convert to JSON
+    education_level: '',
+    location: '',
+    communication_level: '',
+    availability_per_week: '',
+    notice_period: '',
+    salary_expectation: '',
+    source: '',
+    pipeline_stage: 'introduced',
+    pipeline_status: 'active',
+  });
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [filters, setFilters] = useState<any>({});
   const [searchTerm, setSearchTerm] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const candidatesPerPage = 25;
+  const [duplicateModal, setDuplicateModal] = useState<{
+    open: boolean;
+    existingCandidateId?: string;
+    existingCandidateName?: string;
+    existingSourceName?: string;
+    formData?: FormData;
+  }>({ open: false });
 
   // Load data
   useEffect(() => {
@@ -51,9 +95,12 @@ export default function CompanyKandidaten() {
     loadJobs();
   }, []);
 
+  const { selectedCompany } = useCompany();
+  
   const loadJobs = async () => {
     try {
-      const response = await fetch('/api/job-descriptions');
+      const companyParam = selectedCompany?.id ? `?company_id=${selectedCompany.id}` : '';
+      const response = await fetch(`/api/job-descriptions${companyParam}`);
       if (response.ok) {
         const data = await response.json();
         setJobs(data.jobs || []);
@@ -65,7 +112,8 @@ export default function CompanyKandidaten() {
 
   const loadCandidates = async () => {
     try {
-      const response = await fetch('/api/candidates');
+      const companyParam = selectedCompany?.id ? `?company_id=${selectedCompany.id}` : '';
+      const response = await fetch(`/api/candidates${companyParam}`);
       if (response.ok) {
         const data = await response.json();
         setCandidates(data.candidates || []);
@@ -153,7 +201,10 @@ export default function CompanyKandidaten() {
       jobIds.push(...prefIds);
     }
     
-    const jobStatuses = jobIds
+    // Remove duplicates (in case job_id is also in preferential_job_ids)
+    const uniqueJobIds = Array.from(new Set(jobIds));
+    
+    const jobStatuses = uniqueJobIds
       .map(jobId => {
         const job = jobs.find(j => j.id === jobId);
         return job ? { id: jobId, title: job.title, company: job.company } : null;
@@ -183,10 +234,53 @@ export default function CompanyKandidaten() {
         formData.append('job_ids', selectedJobs.join(','));
       }
 
+      // Add extended fields BEFORE the fetch call
+      if (candidateForm.motivation_reason) formData.append('motivation_reason', candidateForm.motivation_reason);
+      if (candidateForm.test_results) formData.append('test_results', candidateForm.test_results);
+      if (candidateForm.age) formData.append('age', candidateForm.age);
+      if (candidateForm.years_experience) formData.append('years_experience', candidateForm.years_experience);
+      if (candidateForm.skill_tags) {
+        const skillTagsArray = candidateForm.skill_tags.split(',').map(t => t.trim()).filter(Boolean);
+        formData.append('skill_tags', JSON.stringify(skillTagsArray));
+      }
+      if (candidateForm.prior_job_titles) {
+        const jobTitlesArray = candidateForm.prior_job_titles.split(',').map(t => t.trim()).filter(Boolean);
+        formData.append('prior_job_titles', JSON.stringify(jobTitlesArray));
+      }
+      if (candidateForm.certifications) {
+        const certsArray = candidateForm.certifications.split(',').map(t => t.trim()).filter(Boolean);
+        formData.append('certifications', JSON.stringify(certsArray));
+      }
+      if (candidateForm.education_level) formData.append('education_level', candidateForm.education_level);
+      if (candidateForm.location) formData.append('location', candidateForm.location);
+      if (candidateForm.communication_level) formData.append('communication_level', candidateForm.communication_level);
+      if (candidateForm.availability_per_week) formData.append('availability_per_week', candidateForm.availability_per_week);
+      if (candidateForm.notice_period) formData.append('notice_period', candidateForm.notice_period);
+      if (candidateForm.salary_expectation) formData.append('salary_expectation', candidateForm.salary_expectation);
+      if (candidateForm.source) formData.append('source', candidateForm.source);
+      if (candidateForm.pipeline_stage) formData.append('pipeline_stage', candidateForm.pipeline_stage);
+      if (candidateForm.pipeline_status) formData.append('pipeline_status', candidateForm.pipeline_status);
+
       const response = await fetch('/api/upload-resume', {
         method: 'POST',
         body: formData
       });
+
+      const responseData = await response.json().catch(() => ({}));
+
+      // Check for duplicate warning (not an error, but a request for user action)
+      if (!response.ok && responseData.duplicate_detected) {
+        // Show duplicate modal with options
+        setDuplicateModal({
+          open: true,
+          existingCandidateId: responseData.existing_candidate_id,
+          existingCandidateName: responseData.existing_candidate_name,
+          existingSourceName: responseData.existing_source_name || 'een andere partij',
+          formData: formData  // Store formData for retry
+        });
+        setIsUploading(false);
+        return;
+      }
 
       if (response.ok) {
         await loadCandidates();
@@ -194,16 +288,36 @@ export default function CompanyKandidaten() {
         setCandidateName('');
         setCandidateEmail('');
         setSelectedJobs([]);
+        setCandidateForm({
+          motivation_reason: '',
+          test_results: '',
+          age: '',
+          years_experience: '',
+          skill_tags: '',
+          prior_job_titles: '',
+          certifications: '',
+          education_level: '',
+          location: '',
+          communication_level: '',
+          availability_per_week: '',
+          notice_period: '',
+          salary_expectation: '',
+          source: '',
+          pipeline_stage: 'introduced',
+          pipeline_status: 'active',
+        });
         setShowAddModal(false);
-        alert('Kandidaat succesvol geüpload');
+        const message = responseData.overwritten 
+          ? 'Kandidaat succesvol bijgewerkt (overschreven)'
+          : 'Kandidaat succesvol geüpload';
+        alert(message);
       } else {
         let errorMessage = 'Onbekende fout';
         try {
-          const error = await response.json();
-          errorMessage = error.error || error.detail || error.message || 'Onbekende fout';
+          const error = responseData.error || responseData.detail || responseData.message || 'Onbekende fout';
+          errorMessage = error;
         } catch (e) {
-          const errorText = await response.text();
-          errorMessage = errorText || 'Onbekende fout';
+          errorMessage = 'Onbekende fout';
         }
         alert('Fout bij uploaden: ' + errorMessage);
       }
@@ -211,6 +325,86 @@ export default function CompanyKandidaten() {
       alert('Fout bij uploaden: ' + error.message);
     } finally {
       setIsUploading(false);
+    }
+  };
+
+  const handleDuplicateAction = async (action: 'overwrite' | 'force' | 'cancel') => {
+    if (action === 'cancel') {
+      setDuplicateModal({ open: false });
+      setIsUploading(false);
+      return;
+    }
+
+    if (!duplicateModal.formData) {
+      setDuplicateModal({ open: false });
+      setIsUploading(false);
+      return;
+    }
+
+    setIsUploading(true);
+    try {
+      const formData = duplicateModal.formData;
+      
+      if (action === 'overwrite' && duplicateModal.existingCandidateId) {
+        // Update existing candidate
+        formData.append('duplicate_candidate_id', duplicateModal.existingCandidateId);
+      } else if (action === 'force') {
+        // Force create duplicate (new entry)
+        formData.append('force_duplicate', 'true');
+      }
+
+      const response = await fetch('/api/upload-resume', {
+        method: 'POST',
+        body: formData
+      });
+
+      const responseData = await response.json().catch(() => ({}));
+
+      if (response.ok) {
+        await loadCandidates();
+        setSelectedFile(null);
+        setCandidateName('');
+        setCandidateEmail('');
+        setSelectedJobs([]);
+        setCandidateForm({
+          motivation_reason: '',
+          test_results: '',
+          age: '',
+          years_experience: '',
+          skill_tags: '',
+          prior_job_titles: '',
+          certifications: '',
+          education_level: '',
+          location: '',
+          communication_level: '',
+          availability_per_week: '',
+          notice_period: '',
+          salary_expectation: '',
+          source: '',
+          pipeline_stage: 'introduced',
+          pipeline_status: 'active',
+        });
+        setShowAddModal(false);
+        setDuplicateModal({ open: false });
+        const message = action === 'overwrite' 
+          ? 'Kandidaat succesvol bijgewerkt'
+          : 'Kandidaat succesvol toegevoegd (duplicaat toegestaan)';
+        alert(message);
+      } else {
+        let errorMessage = 'Onbekende fout';
+        try {
+          const error = responseData.error || responseData.detail || responseData.message || 'Onbekende fout';
+          errorMessage = error;
+        } catch (e) {
+          errorMessage = 'Onbekende fout';
+        }
+        alert('Fout bij uploaden: ' + errorMessage);
+      }
+    } catch (error: any) {
+      alert('Fout bij uploaden: ' + error.message);
+    } finally {
+      setIsUploading(false);
+      setDuplicateModal({ open: false });
     }
   };
 
@@ -391,13 +585,13 @@ export default function CompanyKandidaten() {
                     <th className="text-left py-3 px-4 text-sm font-semibold text-barnes-dark-violet">Acties</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {paginatedCandidates.map(candidate => {
+                <tbody>
+                  {paginatedCandidates.map((candidate, rowIdx) => {
                     const jobStatuses = getCandidateJobStatus(candidate);
                     return (
                       <tr 
                         key={candidate.id} 
-                        className="hover:bg-gray-50 transition-colors"
+                        className="hover:bg-gray-50 transition-colors border-b border-gray-200 last:border-b-0"
                       >
                         <td className="py-3 px-4">
                           <Link
@@ -415,7 +609,7 @@ export default function CompanyKandidaten() {
                             <div className="flex flex-wrap gap-1">
                               {jobStatuses.map((job, idx) => (
                                 <span
-                                  key={job.id}
+                                  key={`${candidate.id}-${job.id}-${idx}`}
                                   className="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium bg-barnes-violet/10 text-barnes-violet border border-barnes-violet/20"
                                   title={`${job.title} bij ${job.company}`}
                                 >
@@ -536,11 +730,11 @@ export default function CompanyKandidaten() {
         )}
       </div>
 
-      {/* Add Candidate Modal */}
+      {/* Add Candidate Modal - Expanded with all new fields */}
       {showAddModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
-          <div className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
-            <div className="p-6 border-b border-gray-200">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4 py-4">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-4xl w-full max-h-[95vh] overflow-hidden flex flex-col">
+            <div className="p-6 border-b border-gray-200 flex-shrink-0">
               <div className="flex items-center justify-between">
                 <h2 className="text-2xl font-semibold text-barnes-dark-violet">Nieuwe Kandidaat Toevoegen</h2>
                 <button
@@ -554,102 +748,480 @@ export default function CompanyKandidaten() {
               </div>
             </div>
 
-            <form onSubmit={handleUpload} className="p-6 space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-barnes-dark-gray mb-2">
-                CV Bestand *
-              </label>
-              <input
-                type="file"
-                accept=".pdf,.doc,.docx,.txt"
-                onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
-                required
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-barnes-violet"
-              />
-            </div>
-
-              <div className="grid grid-cols-2 gap-4">
+            <form onSubmit={handleUpload} className="flex-1 overflow-y-auto p-6 space-y-6">
+              {/* Basic Information Section */}
+              <div className="space-y-4">
+                <h3 className="text-lg font-semibold text-barnes-dark-violet pb-2 border-b border-gray-200">Basis Informatie</h3>
                 <div>
                   <label className="block text-sm font-medium text-barnes-dark-gray mb-2">
-                    Naam *
+                    CV Bestand *
+                  </label>
+                  <input
+                    type="file"
+                    accept=".pdf,.doc,.docx,.txt"
+                    onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
+                    required
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-barnes-violet"
+                  />
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-barnes-dark-gray mb-2">
+                      Naam *
+                    </label>
+                    <input
+                      type="text"
+                      value={candidateName}
+                      onChange={(e) => setCandidateName(e.target.value)}
+                      required
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-barnes-violet"
+                      placeholder="Naam van kandidaat"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-barnes-dark-gray mb-2">
+                      E-mail
+                    </label>
+                    <input
+                      type="email"
+                      value={candidateEmail}
+                      onChange={(e) => setCandidateEmail(e.target.value)}
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-barnes-violet"
+                      placeholder="email@example.com"
+                    />
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-barnes-dark-gray mb-2">
+                      Leeftijd
+                    </label>
+                    <input
+                      type="number"
+                      value={candidateForm.age}
+                      onChange={(e) => setCandidateForm({...candidateForm, age: e.target.value})}
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-barnes-violet"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-barnes-dark-gray mb-2">
+                      Jaren Ervaring
+                    </label>
+                    <input
+                      type="number"
+                      value={candidateForm.years_experience}
+                      onChange={(e) => setCandidateForm({...candidateForm, years_experience: e.target.value})}
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-barnes-violet"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-barnes-dark-gray mb-2">
+                      Locatie
+                    </label>
+                    <input
+                      type="text"
+                      value={candidateForm.location}
+                      onChange={(e) => setCandidateForm({...candidateForm, location: e.target.value})}
+                      placeholder="bijv. Amsterdam"
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-barnes-violet"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Professional Information Section */}
+              <div className="space-y-4">
+                <h3 className="text-lg font-semibold text-barnes-dark-violet pb-2 border-b border-gray-200">Professionele Informatie</h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-barnes-dark-gray mb-2">
+                      Opleidingsniveau
+                    </label>
+                    <select
+                      value={candidateForm.education_level}
+                      onChange={(e) => setCandidateForm({...candidateForm, education_level: e.target.value})}
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-barnes-violet"
+                    >
+                      <option value="">Selecteer...</option>
+                      <option value="MBO">MBO</option>
+                      <option value="HBO">HBO</option>
+                      <option value="Bachelor">Bachelor</option>
+                      <option value="Master">Master</option>
+                      <option value="PhD">PhD</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-barnes-dark-gray mb-2">
+                      Communicatieniveau
+                    </label>
+                    <select
+                      value={candidateForm.communication_level}
+                      onChange={(e) => setCandidateForm({...candidateForm, communication_level: e.target.value})}
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-barnes-violet"
+                    >
+                      <option value="">Selecteer...</option>
+                      <option value="Native">Native</option>
+                      <option value="Fluent">Vloeiend</option>
+                      <option value="Intermediate">Gemiddeld</option>
+                      <option value="Basic">Basis</option>
+                    </select>
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-barnes-dark-gray mb-2">
+                    Vaardigheden (gescheiden door komma's)
                   </label>
                   <input
                     type="text"
-                    value={candidateName}
-                    onChange={(e) => setCandidateName(e.target.value)}
-                    required
+                    value={candidateForm.skill_tags}
+                    onChange={(e) => setCandidateForm({...candidateForm, skill_tags: e.target.value})}
+                    placeholder="bijv. Python, JavaScript, React"
                     className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-barnes-violet"
-                    placeholder="Naam van kandidaat"
                   />
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-barnes-dark-gray mb-2">
-                    Email
+                    Eerdere Functies (gescheiden door komma's)
                   </label>
                   <input
-                    type="email"
-                    value={candidateEmail}
-                    onChange={(e) => setCandidateEmail(e.target.value)}
+                    type="text"
+                    value={candidateForm.prior_job_titles}
+                    onChange={(e) => setCandidateForm({...candidateForm, prior_job_titles: e.target.value})}
+                    placeholder="bijv. Software Developer, Team Lead"
                     className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-barnes-violet"
-                    placeholder="email@example.com"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-barnes-dark-gray mb-2">
+                    Certificeringen (gescheiden door komma's)
+                  </label>
+                  <input
+                    type="text"
+                    value={candidateForm.certifications}
+                    onChange={(e) => setCandidateForm({...candidateForm, certifications: e.target.value})}
+                    placeholder="bijv. AWS Certified, Scrum Master"
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-barnes-violet"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-barnes-dark-gray mb-2">
+                    Testresultaten / Skill Scores
+                  </label>
+                  <textarea
+                    value={candidateForm.test_results}
+                    onChange={(e) => setCandidateForm({...candidateForm, test_results: e.target.value})}
+                    placeholder="Testresultaten of skill scores..."
+                    rows={3}
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-barnes-violet"
                   />
                 </div>
               </div>
 
-              <div>
-              <label className="block text-sm font-medium text-barnes-dark-gray mb-2">
-                Preferentiële Vacatures (Optioneel - Meerdere selecteren mogelijk)
-              </label>
-              <div className="space-y-2 max-h-48 overflow-y-auto border border-gray-300 rounded-lg p-3">
-                {jobs.length === 0 ? (
-                  <p className="text-sm text-gray-500">Geen vacatures beschikbaar</p>
-                ) : (
-                  jobs.map(job => (
-                    <label key={job.id} className="flex items-center gap-2 cursor-pointer hover:bg-gray-50 p-2 rounded">
-                      <input
-                        type="checkbox"
-                        checked={selectedJobs.includes(job.id)}
-                        onChange={(e) => {
-                          if (e.target.checked) {
-                            setSelectedJobs([...selectedJobs, job.id]);
-                          } else {
-                            setSelectedJobs(selectedJobs.filter(id => id !== job.id));
-                          }
-                        }}
-                        className="w-4 h-4 text-barnes-violet border-gray-300 rounded focus:ring-barnes-violet"
-                      />
-                      <span className="text-sm text-barnes-dark-gray">
-                        {job.title} - {job.company}
-                      </span>
+              {/* Availability & Compensation Section */}
+              <div className="space-y-4">
+                <h3 className="text-lg font-semibold text-barnes-dark-violet pb-2 border-b border-gray-200">Beschikbaarheid & Vergoeding</h3>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-barnes-dark-gray mb-2">
+                      Beschikbaar per week (uren)
                     </label>
-                  ))
-                )}
+                    <input
+                      type="number"
+                      value={candidateForm.availability_per_week}
+                      onChange={(e) => setCandidateForm({...candidateForm, availability_per_week: e.target.value})}
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-barnes-violet"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-barnes-dark-gray mb-2">
+                      Opzegtermijn
+                    </label>
+                    <input
+                      type="text"
+                      value={candidateForm.notice_period}
+                      onChange={(e) => setCandidateForm({...candidateForm, notice_period: e.target.value})}
+                      placeholder="bijv. 2 weken, 1 maand"
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-barnes-violet"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-barnes-dark-gray mb-2">
+                      Salarisverwachting (EUR / 40h)
+                    </label>
+                    <input
+                      type="number"
+                      value={candidateForm.salary_expectation}
+                      onChange={(e) => setCandidateForm({...candidateForm, salary_expectation: e.target.value})}
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-barnes-violet"
+                    />
+                  </div>
+                </div>
               </div>
-              <p className="text-xs text-barnes-dark-gray mt-1">
-                  Selecteer vacatures waar deze kandidaat voorkeur voor heeft.
-              </p>
-            </div>
 
-              <div className="flex gap-3 pt-4">
+              {/* Motivation & Application Section */}
+              <div className="space-y-4">
+                <h3 className="text-lg font-semibold text-barnes-dark-violet pb-2 border-b border-gray-200">Motivatie & Aanmelding</h3>
+                <div>
+                  <label className="block text-sm font-medium text-barnes-dark-gray mb-2">
+                    Motivatie voor rol / Reden vertrek huidige functie
+                  </label>
+                  <textarea
+                    value={candidateForm.motivation_reason}
+                    onChange={(e) => setCandidateForm({...candidateForm, motivation_reason: e.target.value})}
+                    placeholder="Waarom is de kandidaat geïnteresseerd in deze rol?"
+                    rows={4}
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-barnes-violet"
+                  />
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-barnes-dark-gray mb-2">
+                      Bron (Hoe is kandidaat gevonden?)
+                    </label>
+                    <select
+                      value={candidateForm.source}
+                      onChange={(e) => setCandidateForm({...candidateForm, source: e.target.value})}
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-barnes-violet"
+                    >
+                      <option value="">Selecteer...</option>
+                      <option value="LinkedIn">LinkedIn</option>
+                      <option value="Indeed">Indeed</option>
+                      <option value="Direct">Direct</option>
+                      <option value="Agency">Recruitmentsbureau</option>
+                      <option value="Referral">Referral</option>
+                      <option value="Other">Anders</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-barnes-dark-gray mb-2">
+                      Pipeline Stage
+                    </label>
+                    <select
+                      value={candidateForm.pipeline_stage}
+                      onChange={(e) => setCandidateForm({...candidateForm, pipeline_stage: e.target.value})}
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-barnes-violet"
+                    >
+                      <option value="introduced">Geïntroduceerd</option>
+                      <option value="review">Review/Vergelijking</option>
+                      <option value="first_interview">Eerste gesprek + evaluatie</option>
+                      <option value="second_interview">Tweede gesprek / technische test</option>
+                      <option value="offer">Aanbieding</option>
+                      <option value="complete">Proces voltooid</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-barnes-dark-gray mb-2">
+                      Pipeline Status
+                    </label>
+                    <select
+                      value={candidateForm.pipeline_status}
+                      onChange={(e) => setCandidateForm({...candidateForm, pipeline_status: e.target.value})}
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-barnes-violet"
+                    >
+                      <option value="active">Actief</option>
+                      <option value="on_hold">On Hold</option>
+                      <option value="rejected">Afgewezen</option>
+                      <option value="accepted">Geaccepteerd</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              {/* Job Assignment Section */}
+              <div className="space-y-4">
+                <h3 className="text-lg font-semibold text-barnes-dark-violet pb-2 border-b border-gray-200">Vacature Toewijzing</h3>
+                <div>
+                  <label className="block text-sm font-medium text-barnes-dark-gray mb-2">
+                    Preferentiële Vacatures (Optioneel - Meerdere selecteren mogelijk)
+                  </label>
+                  <div className="space-y-2 max-h-48 overflow-y-auto border border-gray-300 rounded-lg p-3">
+                    {jobs.length === 0 ? (
+                      <p className="text-sm text-gray-500">Geen vacatures beschikbaar</p>
+                    ) : (
+                      jobs.map(job => (
+                        <label key={job.id} className="flex items-center gap-2 cursor-pointer hover:bg-gray-50 p-2 rounded">
+                          <input
+                            type="checkbox"
+                            checked={selectedJobs.includes(job.id)}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setSelectedJobs([...selectedJobs, job.id]);
+                              } else {
+                                setSelectedJobs(selectedJobs.filter(id => id !== job.id));
+                              }
+                            }}
+                            className="w-4 h-4 text-barnes-violet border-gray-300 rounded focus:ring-barnes-violet"
+                          />
+                          <span className="text-sm text-barnes-dark-gray">
+                            {job.title} - {job.company}
+                          </span>
+                        </label>
+                      ))
+                    )}
+                  </div>
+                  <p className="text-xs text-barnes-dark-gray mt-1">
+                    Selecteer vacatures waar deze kandidaat voorkeur voor heeft.
+                  </p>
+                </div>
+              </div>
+
+              {/* Form Actions */}
+              <div className="flex gap-3 pt-4 border-t border-gray-200 sticky bottom-0 bg-white">
                 <button
                   type="button"
-                  onClick={() => setShowAddModal(false)}
+                  onClick={() => {
+                    setShowAddModal(false);
+                    // Reset form
+                    setCandidateForm({
+                      motivation_reason: '',
+                      test_results: '',
+                      age: '',
+                      years_experience: '',
+                      skill_tags: '',
+                      prior_job_titles: '',
+                      certifications: '',
+                      education_level: '',
+                      location: '',
+                      communication_level: '',
+                      availability_per_week: '',
+                      notice_period: '',
+                      salary_expectation: '',
+                      source: '',
+                      pipeline_stage: 'introduced',
+                      pipeline_status: 'active',
+                    });
+                    setSelectedFile(null);
+                    setCandidateName('');
+                    setCandidateEmail('');
+                    setSelectedJobs([]);
+                  }}
                   className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-barnes-dark-gray hover:bg-gray-50"
                 >
                   Annuleren
                 </button>
-          <button
-            type="submit"
-            disabled={isUploading}
+                <button
+                  type="submit"
+                  disabled={isUploading}
                   className="flex-1 btn-primary px-4 py-2 disabled:opacity-50"
-          >
+                >
                   {isUploading ? 'Uploaden...' : 'Kandidaat Toevoegen'}
-          </button>
+                </button>
               </div>
-        </form>
-      </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Duplicate Candidate Modal */}
+      {duplicateModal.open && (
+        <div
+          className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setDuplicateModal({ open: false });
+              setIsUploading(false);
+            }
+          }}
+        >
+          <div className="bg-white rounded-2xl max-w-lg w-full p-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-xl font-semibold text-barnes-dark-violet">Dubbele kandidaat gedetecteerd</h3>
+                <p className="text-sm text-barnes-dark-gray mt-1">
+                  Deze kandidaat is al eerder ingediend
+                </p>
+              </div>
+              <button
+                onClick={() => {
+                  setDuplicateModal({ open: false });
+                  setIsUploading(false);
+                }}
+                className="text-gray-500 hover:text-gray-700"
+              >
+                ✕
+              </button>
             </div>
-          )}
+
+            <div className="p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+              <p className="text-sm font-medium text-yellow-800 mb-2">Bestaande kandidaat gevonden:</p>
+              <p className="text-sm text-yellow-700">
+                <strong>{duplicateModal.existingCandidateName}</strong>
+                {duplicateModal.existingSourceName && (
+                  <> • Ingediend door: <strong>{duplicateModal.existingSourceName}</strong></>
+                )}
+              </p>
+            </div>
+
+            <div className="space-y-3">
+              <p className="text-sm text-barnes-dark-gray">
+                Kies wat u wilt doen met deze kandidaat:
+              </p>
+
+              <div className="space-y-2">
+                <button
+                  onClick={() => handleDuplicateAction('overwrite')}
+                  disabled={isUploading || !duplicateModal.existingCandidateId}
+                  className="w-full text-left p-4 border-2 border-barnes-violet rounded-lg hover:bg-barnes-violet/5 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <div className="flex items-start gap-3">
+                    <div className="flex-shrink-0 w-6 h-6 rounded-full border-2 border-barnes-violet flex items-center justify-center mt-0.5">
+                      <svg className="w-4 h-4 text-barnes-violet" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                      </svg>
+                    </div>
+                    <div className="flex-1">
+                      <p className="font-semibold text-barnes-dark-violet">Overschrijven</p>
+                      <p className="text-xs text-barnes-dark-gray mt-1">
+                        Vervang de bestaande kandidaat met de nieuwe informatie
+                      </p>
+                    </div>
+                  </div>
+                </button>
+
+                <button
+                  onClick={() => handleDuplicateAction('force')}
+                  disabled={isUploading}
+                  className="w-full text-left p-4 border-2 border-orange-400 rounded-lg hover:bg-orange-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <div className="flex items-start gap-3">
+                    <div className="flex-shrink-0 w-6 h-6 rounded-full border-2 border-orange-400 flex items-center justify-center mt-0.5">
+                      <svg className="w-4 h-4 text-orange-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                      </svg>
+                    </div>
+                    <div className="flex-1">
+                      <p className="font-semibold text-orange-700">Toch toevoegen</p>
+                      <p className="text-xs text-barnes-dark-gray mt-1">
+                        Voeg een nieuwe kandidaat toe (duplicaat toegestaan)
+                      </p>
+                    </div>
+                  </div>
+                </button>
+
+                <button
+                  onClick={() => handleDuplicateAction('cancel')}
+                  disabled={isUploading}
+                  className="w-full text-left p-4 border-2 border-gray-300 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <div className="flex items-start gap-3">
+                    <div className="flex-shrink-0 w-6 h-6 rounded-full border-2 border-gray-400 flex items-center justify-center mt-0.5">
+                      <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </div>
+                    <div className="flex-1">
+                      <p className="font-semibold text-gray-700">Annuleren</p>
+                      <p className="text-xs text-barnes-dark-gray mt-1">
+                        Onderbreek de upload en keer terug
+                      </p>
+                    </div>
+                  </div>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

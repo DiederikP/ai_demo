@@ -1,5 +1,7 @@
 import type { Metadata } from 'next'
 import './globals.css'
+import { AuthProvider } from '../contexts/AuthContext'
+import { CompanyProvider } from '../contexts/CompanyContext'
 
 export const metadata: Metadata = {
   title: 'Barnes AI Candidate Evaluation | Professional Assessment Service',
@@ -28,7 +30,13 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className="font-barnes-sans">{children}</body>
+      <body className="font-barnes-sans">
+        <AuthProvider>
+          <CompanyProvider>
+            {children}
+          </CompanyProvider>
+        </AuthProvider>
+      </body>
     </html>
   )
 }

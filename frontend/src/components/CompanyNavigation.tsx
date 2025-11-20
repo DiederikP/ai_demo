@@ -1,12 +1,17 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
 import GlobalSearch from './GlobalSearch';
 import NotificationCenter from './NotificationCenter';
+import PortalSelector from './CompanySelector';
+import { useAuth } from '../contexts/AuthContext';
+import { usePermissions } from '../hooks/usePermissions';
 
 interface CompanyNavigationProps {
   activeModule: 'dashboard' | 'vacatures' | 'personas' | 'kandidaten' | 'resultaten';
   onModuleChange: (module: 'dashboard' | 'vacatures' | 'personas' | 'kandidaten' | 'resultaten') => void;
+  onCollapsedChange?: (isCollapsed: boolean) => void;
 }
 
 interface CompanyInfo {
@@ -26,18 +31,44 @@ interface UserSummary {
   company?: CompanyInfo | null;
 }
 
-export default function CompanyNavigation({ activeModule, onModuleChange }: CompanyNavigationProps) {
+export default function CompanyNavigation({ activeModule, onModuleChange, onCollapsedChange }: CompanyNavigationProps) {
   const [isCollapsed, setIsCollapsed] = useState(false);
+  const { user, logout: logoutAuth, isLoading: authLoading } = useAuth();
+  const { isAdmin } = usePermissions();
+  const router = useRouter();
+  
+  useEffect(() => {
+    if (onCollapsedChange) {
+      onCollapsedChange(isCollapsed);
+    }
+  }, [isCollapsed, onCollapsedChange]);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isNotificationOpen, setIsNotificationOpen] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [companyInfo, setCompanyInfo] = useState<CompanyInfo | null>(null);
   const [isAccountModalOpen, setIsAccountModalOpen] = useState(false);
-  const [accountName, setAccountName] = useState('Demo User');
-  const [accountEmail, setAccountEmail] = useState('demo@barnes.nl');
+  const [accountName, setAccountName] = useState(user?.name || 'Demo User');
+  const [accountEmail, setAccountEmail] = useState(user?.email || 'demo@barnes.nl');
   const [accountError, setAccountError] = useState<string | null>(null);
   const [isSavingAccount, setIsSavingAccount] = useState(false);
+
+  // Update account info from auth context
+  useEffect(() => {
+    if (user) {
+      setAccountName(user.name);
+      setAccountEmail(user.email);
+      setCurrentUserId(user.id);
+      if (user.company_id) {
+        // Load company info if needed
+      }
+    }
+  }, [user]);
+
+  const handleLogout = () => {
+    logoutAuth();
+    router.push('/company/login');
+  };
 
   const setActiveUser = (user: UserSummary) => {
     localStorage.setItem('current_user_id', user.id);
@@ -203,15 +234,40 @@ export default function CompanyNavigation({ activeModule, onModuleChange }: Comp
       )}
 
       {/* Desktop/Mobile Navigation */}
-      <nav className={`bg-white border-r border-gray-200 h-screen fixed left-0 top-0 transition-all duration-300 z-50 ${
-        isCollapsed ? 'w-16' : 'w-64'
-      } ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}>
+      <nav 
+        className={`bg-white border-r border-gray-200 h-screen fixed left-0 top-0 transition-all duration-300 z-50 flex flex-col ${
+          isCollapsed ? 'w-16' : 'w-64'
+        } ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}
+        style={{
+          '--nav-width': isCollapsed ? '4rem' : '16rem'
+        } as React.CSSProperties}
+      >
+      {/* Portal Selector - Top of screen */}
+      <div className="p-4 border-b border-gray-200 bg-gray-50">
+        {!isCollapsed && (
+          <PortalSelector />
+        )}
+        {isCollapsed && (
+          <div className="flex justify-center">
+            <button
+              onClick={() => setIsCollapsed(false)}
+              className="w-8 h-8 rounded-lg border border-gray-200 text-barnes-dark-gray flex items-center justify-center hover:border-barnes-violet transition-colors"
+              title="Omgeving selecteren"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
+              </svg>
+            </button>
+          </div>
+        )}
+      </div>
+      
       <div className="p-4 border-b border-gray-200">
         <div className="flex items-center justify-between gap-2">
           <button
             onClick={handleAccountButtonClick}
             className={`flex items-center gap-3 rounded-2xl border border-gray-200 bg-barnes-violet/5 px-3 py-2 text-left hover:border-barnes-violet transition-colors ${
-              isCollapsed ? 'w-10 h-10 justify-center text-barnes-dark-violet' : 'w-full'
+              isCollapsed ? 'w-10 h-10 justify-center text-barnes-dark-violet' : 'flex-1'
             }`}
           >
             <div className={`flex items-center gap-3 ${isCollapsed ? 'justify-center' : ''}`}>
@@ -226,6 +282,18 @@ export default function CompanyNavigation({ activeModule, onModuleChange }: Comp
               )}
             </div>
           </button>
+          {!isCollapsed && (
+            <button
+              onClick={handleLogout}
+              className="w-9 h-9 rounded-full border border-gray-200 text-barnes-dark-gray hover:border-red-300 hover:bg-red-50 hover:text-red-600 flex items-center justify-center transition-colors"
+              title="Uitloggen"
+              aria-label="Uitloggen"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+              </svg>
+            </button>
+          )}
           <div className="flex items-center gap-2">
             <button
               onClick={() => setIsNotificationOpen(true)}
@@ -243,14 +311,15 @@ export default function CompanyNavigation({ activeModule, onModuleChange }: Comp
             </button>
             <button
               onClick={() => setIsCollapsed(!isCollapsed)}
-              className="w-9 h-9 rounded-full border border-gray-200 text-barnes-dark-gray flex items-center justify-center hover:border-barnes-violet transition-colors"
+              className="w-9 h-9 rounded-full border-2 border-barnes-violet/50 text-barnes-dark-violet flex items-center justify-center hover:border-barnes-violet hover:bg-barnes-violet/10 transition-all duration-200 shadow-sm"
               aria-label={isCollapsed ? 'Expand menu' : 'Collapse menu'}
+              title={isCollapsed ? 'Menu uitklappen' : 'Menu inklappen'}
             >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2.5}>
                 {isCollapsed ? (
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
                 ) : (
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
                 )}
               </svg>
             </button>
@@ -283,30 +352,48 @@ export default function CompanyNavigation({ activeModule, onModuleChange }: Comp
         ))}
       </div>
 
-      <div className="absolute bottom-0 left-0 right-0 p-4 border-t border-gray-200 space-y-3">
+      <div className="absolute bottom-0 left-0 right-0 p-4 border-t border-gray-200 space-y-3 bg-white">
         {companyInfo && (
           !isCollapsed ? (
-            <div className="rounded-2xl border border-gray-200 bg-white/80 p-3">
+            <button
+              onClick={() => {
+                // Navigate to company settings or dashboard
+                if (onModuleChange) {
+                  onModuleChange('dashboard');
+                } else {
+                  window.location.href = '/company/dashboard';
+                }
+              }}
+              className="w-full rounded-2xl border border-gray-200 bg-white/80 p-3 hover:bg-gray-50 hover:border-barnes-violet transition-colors text-left cursor-pointer"
+            >
               <p className="text-[10px] uppercase text-barnes-dark-gray tracking-widest mb-1">Bedrijf</p>
               <p className="text-sm font-semibold text-barnes-dark-violet">{companyInfo.name}</p>
               <p className="text-xs text-barnes-dark-gray">
                 {(companyInfo.primary_domain || 'Eigen domein')} • {(companyInfo.plan || 'trial').toUpperCase()}
               </p>
-            </div>
+            </button>
           ) : (
-            <div
-              className="text-[10px] text-center text-barnes-dark-gray uppercase tracking-widest"
-              title={`${companyInfo.name} • ${(companyInfo.plan || 'trial').toUpperCase()}`}
+            <button
+              onClick={() => {
+                if (onModuleChange) {
+                  onModuleChange('dashboard');
+                } else {
+                  window.location.href = '/company/dashboard';
+                }
+              }}
+              className="w-full text-[10px] text-center text-barnes-dark-gray uppercase tracking-widest hover:text-barnes-violet transition-colors p-2 rounded-lg hover:bg-gray-50 cursor-pointer"
+              title={`${companyInfo.name} • ${(companyInfo.primary_domain || 'Eigen domein')} • ${(companyInfo.plan || 'trial').toUpperCase()}`}
             >
-              {companyInfo.name.slice(0, 10)}
-            </div>
+              {companyInfo.name.slice(0, 8)}
+            </button>
           )
         )}
         <button
           onClick={() => window.location.href = '/'}
-          className="w-full flex items-center gap-3 px-4 py-3 text-left text-barnes-dark-gray hover:bg-gray-50 rounded-lg transition-colors"
+          className={`w-full flex items-center gap-3 px-4 py-3 text-left text-barnes-dark-gray hover:bg-gray-50 rounded-lg transition-colors ${isCollapsed ? 'justify-center px-2' : ''}`}
+          title={isCollapsed ? 'Terug naar website' : undefined}
         >
-          <span>←</span>
+          <span className="text-lg">←</span>
           {!isCollapsed && <span>Terug naar website</span>}
         </button>
       </div>

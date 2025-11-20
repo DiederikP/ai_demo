@@ -3,10 +3,10 @@
 import { useState, useEffect } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
+import ProtectedRoute from '../../../../components/ProtectedRoute';
 import CompanyNavigation from '../../../../components/CompanyNavigation';
 import CandidateReviewInfographic from '../../../../components/CandidateReviewInfographic';
 import CommentsSection from '../../../../components/CommentsSection';
-import Candidate360View from '../../../../components/Candidate360View';
 import ApprovalSection from '../../../../components/ApprovalSection';
 
 interface Candidate {
@@ -253,6 +253,43 @@ export default function CandidateDetailPage() {
     }
   };
 
+  const handleAssignToJob = async (jobId: string, showWarning: boolean = true) => {
+    if (!candidate || !jobId) return;
+    
+    // Show warning popup if requested (candidate-2 requirement)
+    if (showWarning) {
+      const confirmed = window.confirm(
+        `⚠️ Waarschuwing: Deze kandidaat wordt toegewezen aan de vacature "${jobs.find(j => j.id === jobId)?.title || jobId}".\n\n` +
+        `Dit betekent dat:\n` +
+        `• De kandidaat is gekoppeld aan deze vacature\n` +
+        `• Evaluaties en debatten worden gekoppeld aan deze vacature\n` +
+        `• Andere gebruikers kunnen de kandidaat zien in de vacature\n\n` +
+        `Doorgaan?`
+      );
+      if (!confirmed) return;
+    }
+    
+    try {
+      const response = await fetch(`/api/candidates/${candidateId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          job_id: jobId,
+          name: candidate.name,
+          email: candidate.email,
+        })
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ error: 'Onbekende fout' }));
+        throw new Error(error.error || 'Toewijzen mislukt');
+      }
+      await loadCandidate();
+      alert('Kandidaat succesvol toegewezen aan vacature');
+    } catch (error: any) {
+      alert(error.message || 'Toewijzen mislukt');
+    }
+  };
+
   const handleConversationSubmit = async () => {
     if (!conversationForm.title || !conversationForm.summary) {
       alert('Titel en samenvatting zijn verplicht');
@@ -331,7 +368,7 @@ export default function CandidateDetailPage() {
           }
         }}
       />
-      <div className="md:ml-64 flex-1 bg-barnes-light-gray min-h-screen p-4 md:p-8">
+      <div className="flex-1 bg-barnes-light-gray min-h-screen p-4 md:p-8 transition-all duration-300" style={{ marginLeft: 'var(--nav-width, 16rem)' }}>
         <div className="mb-6 flex items-center justify-between">
           <div>
             <button onClick={() => router.back()} className="text-barnes-violet hover:underline text-sm mb-1">
@@ -348,32 +385,66 @@ export default function CandidateDetailPage() {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 mb-6">
-          <div className="bg-white rounded-2xl border border-gray-200 p-6 shadow-sm xl:col-span-2">
-            <h2 className="text-xl font-semibold text-barnes-dark-violet mb-4">Vacatures & Voorkeuren</h2>
-            {assignedJob && (
-              <div className="mb-4 p-4 rounded-xl border border-barnes-violet/20 bg-barnes-violet/5">
-                <p className="text-sm text-barnes-dark-gray">Huidige vacature</p>
-                <p className="text-lg font-semibold text-barnes-dark-violet">{assignedJob.title}</p>
-                <p className="text-sm text-barnes-dark-gray">{assignedJob.company}</p>
-              </div>
-            )}
-            <div>
-              <p className="text-sm font-medium text-barnes-dark-gray mb-2">Preferentiële vacatures</p>
-              {preferentialJobs.length > 0 ? (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {preferentialJobs.map((job) => (
-                    <div key={job.id} className="p-3 rounded-xl border border-gray-200 bg-gray-50">
-                      <p className="font-medium text-barnes-dark-violet">{job.title}</p>
-                      <p className="text-sm text-barnes-dark-gray">{job.company}</p>
-                    </div>
-                  ))}
+            <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 mb-6">
+              <div className="bg-white rounded-2xl border border-gray-200 p-6 shadow-sm xl:col-span-2">
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-xl font-semibold text-barnes-dark-violet">Vacatures & Toewijzing</h2>
+                  <button
+                    onClick={() => {
+                      const selectJob = prompt('Selecteer een vacature ID of gebruik de dropdown hieronder');
+                      if (selectJob) {
+                        // In production, this would be a proper modal with job selection
+                        handleAssignToJob(selectJob, true); // Show warning
+                      }
+                    }}
+                    className="px-4 py-2 bg-barnes-violet text-white rounded-lg hover:bg-barnes-dark-violet transition-colors text-sm"
+                  >
+                    Toewijzen aan rol
+                  </button>
                 </div>
-              ) : (
-                <p className="text-sm text-gray-500">Geen voorkeuren opgeslagen</p>
-              )}
-            </div>
-          </div>
+                {assignedJob && (
+                  <div className="mb-4 p-4 rounded-xl border border-barnes-violet/20 bg-barnes-violet/5">
+                    <p className="text-sm text-barnes-dark-gray">Huidige vacature</p>
+                    <p className="text-lg font-semibold text-barnes-dark-violet">{assignedJob.title}</p>
+                    <p className="text-sm text-barnes-dark-gray">{assignedJob.company}</p>
+                  </div>
+                )}
+                <div className="mb-4">
+                  <label className="block text-sm font-medium text-barnes-dark-gray mb-2">Toewijzen aan nieuwe rol</label>
+                  <select
+                    onChange={(e) => {
+                      if (e.target.value) {
+                        handleAssignToJob(e.target.value, true); // Show warning
+                        e.target.value = ''; // Reset dropdown
+                      }
+                    }}
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-barnes-violet focus:border-transparent"
+                    value=""
+                  >
+                    <option value="">Kies een vacature...</option>
+                    {jobs.map((job) => (
+                      <option key={job.id} value={job.id}>
+                        {job.title} - {job.company}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <p className="text-sm font-medium text-barnes-dark-gray mb-2">Preferentiële vacatures</p>
+                  {preferentialJobs.length > 0 ? (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      {preferentialJobs.map((job) => (
+                        <div key={job.id} className="p-3 rounded-xl border border-gray-200 bg-gray-50">
+                          <p className="font-medium text-barnes-dark-violet">{job.title}</p>
+                          <p className="text-sm text-barnes-dark-gray">{job.company}</p>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-sm text-gray-500">Geen voorkeuren opgeslagen</p>
+                  )}
+                </div>
+              </div>
 
           <div className="bg-white rounded-2xl border border-gray-200 p-6 shadow-sm">
             <h2 className="text-xl font-semibold text-barnes-dark-violet mb-4">Kandidaat info</h2>
@@ -562,25 +633,30 @@ export default function CandidateDetailPage() {
           </section>
         )}
 
-        {/* 360° View */}
-        {candidate && (
-          <div className="mb-6">
-            <Candidate360View
-              candidateId={candidateId}
-              candidateName={candidate.name}
-              evaluationResults={evaluationResults.map((r: any) => ({
-                id: r.id,
-                result_type: r.result_type,
-                job_id: r.job_id || '',
-                job_title: jobs.find(j => j.id === r.job_id)?.title,
-                created_at: r.created_at,
-                result_data: r.result_data,
-                selected_personas: r.selected_personas || [],
-              }))}
-              conversations={conversations}
-              jobs={jobs}
-            />
-          </div>
+        {/* Evaluation History - Removed 360 view per user request */}
+        {evaluationResults.length > 0 && (
+          <section className="bg-white rounded-2xl border border-gray-200 p-6 shadow-sm mb-6">
+            <h2 className="text-xl font-semibold text-barnes-dark-violet mb-4">Evaluatie Geschiedenis</h2>
+            <div className="space-y-3">
+              {evaluationResults.map((result: any) => (
+                <div key={result.id} className="p-4 border border-gray-200 rounded-xl">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-sm font-medium text-barnes-dark-violet">
+                      {result.result_type === 'evaluation' ? '📊 Evaluatie' : '💬 Debat'}
+                    </span>
+                    <span className="text-xs text-barnes-dark-gray">
+                      {new Date(result.created_at).toLocaleString('nl-NL')}
+                    </span>
+                  </div>
+                  {result.job_id && (
+                    <p className="text-sm text-barnes-dark-gray">
+                      Vacature: {jobs.find(j => j.id === result.job_id)?.title || 'Onbekend'}
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+          </section>
         )}
 
         {/* Comments Section */}

@@ -36,10 +36,23 @@ export async function POST(request: NextRequest) {
     });
 
     if (!response.ok) {
-      const errorText = await response.text();
-      console.error('Debate error:', errorText);
+      let errorMessage = 'Debate failed';
+      try {
+        const contentType = response.headers.get('content-type');
+        if (contentType && contentType.includes('application/json')) {
+          const errorJson = await response.json();
+          errorMessage = errorJson.detail || errorJson.error || errorMessage;
+        } else {
+          const errorText = await response.text();
+          errorMessage = errorText || errorMessage;
+        }
+      } catch (parseError) {
+        console.error('Error parsing error response:', parseError);
+        errorMessage = `Backend error: ${response.status} ${response.statusText}`;
+      }
+      console.error('Debate error:', errorMessage);
       return NextResponse.json(
-        { error: errorText || 'Debate failed' },
+        { error: errorMessage, success: false },
         { status: response.status }
       );
     }
@@ -52,6 +65,8 @@ export async function POST(request: NextRequest) {
         success: true,
         transcript: result.debate,
         full_prompt: result.full_prompt || '',
+        timing_data: result.timing_data || null,
+        result_id: result.result_id || null
       });
     }
 

@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+const BACKEND_URL = process.env.BACKEND_URL || process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
@@ -16,7 +18,7 @@ export async function GET(request: NextRequest) {
     if (approvalType) params.append('approval_type', approvalType);
     if (userId) params.append('user_id', userId);
 
-    const response = await fetch(`http://localhost:8000/approvals?${params.toString()}`);
+    const response = await fetch(`${BACKEND_URL}/approvals?${params.toString()}`);
     if (!response.ok) {
       const errorText = await response.text();
       return NextResponse.json(
@@ -58,7 +60,7 @@ export async function POST(request: NextRequest) {
       backendFormData.append('comment', formData.get('comment') as string);
     }
 
-    const response = await fetch('http://localhost:8000/approvals', {
+    const response = await fetch(`${BACKEND_URL}/approvals`, {
       method: 'POST',
       body: backendFormData,
     });

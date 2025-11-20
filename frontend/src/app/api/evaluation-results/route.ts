@@ -8,12 +8,14 @@ export async function GET(request: NextRequest) {
     const candidateId = searchParams.get('candidate_id');
     const jobId = searchParams.get('job_id');
     const resultType = searchParams.get('result_type');
+    const companyId = searchParams.get('company_id');
 
     let url = `${BACKEND_URL}/evaluation-results`;
     const params = new URLSearchParams();
     if (candidateId) params.append('candidate_id', candidateId);
     if (jobId) params.append('job_id', jobId);
     if (resultType) params.append('result_type', resultType);
+    if (companyId) params.append('company_id', companyId);
     
     if (params.toString()) {
       url += '?' + params.toString();

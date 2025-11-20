@@ -20,8 +20,18 @@ interface PersonaActivity {
   activity_count: number;
 }
 
+interface User {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+  company_id?: string;
+  created_at: string;
+}
+
 export default function CompanyPersonas() {
   const [personas, setPersonas] = useState<Persona[]>([]);
+  const [users, setUsers] = useState<User[]>([]);
   const [personaActivities, setPersonaActivities] = useState<Record<string, PersonaActivity[]>>({});
   const [selectedPersonaId, setSelectedPersonaId] = useState<string | null>(null);
   const [personaEvaluationDetails, setPersonaEvaluationDetails] = useState<Record<string, any[]>>({});
@@ -33,9 +43,11 @@ export default function CompanyPersonas() {
     system_prompt: ''
   });
   const [isSavingPersona, setIsSavingPersona] = useState(false);
+  const [activeTab, setActiveTab] = useState<'digital' | 'users'>('digital');
 
   useEffect(() => {
     loadPersonas();
+    loadUsers();
   }, []);
 
   useEffect(() => {
@@ -53,6 +65,28 @@ export default function CompanyPersonas() {
       }
     } catch (error) {
       console.error('Error loading personas:', error);
+    }
+  };
+
+  const loadUsers = async () => {
+    try {
+      const response = await fetch('/api/users');
+      if (response.ok) {
+        const data = await response.json();
+        // Get current company ID from localStorage
+        const currentCompanyId = localStorage.getItem('current_company_id');
+        if (currentCompanyId && data.users) {
+          // Filter users by company
+          const companyUsers = data.users.filter((user: User) => 
+            user.company_id === currentCompanyId
+          );
+          setUsers(companyUsers || []);
+        } else {
+          setUsers(data.users || []);
+        }
+      }
+    } catch (error) {
+      console.error('Error loading users:', error);
     }
   };
 
@@ -234,13 +268,58 @@ export default function CompanyPersonas() {
     }
   };
 
+  const handleAddUser = async (email: string) => {
+    if (!email || !email.includes('@')) {
+      alert('Voer een geldig e-mailadres in');
+      return;
+    }
+    
+    try {
+      const formData = new FormData();
+      formData.append('email', email);
+      // Extract name from email (before @)
+      const name = email.split('@')[0].replace(/[._]/g, ' ').split(' ').map(word => 
+        word.charAt(0).toUpperCase() + word.slice(1)
+      ).join(' ');
+      formData.append('name', name);
+      formData.append('role', 'user');
+      
+      // Get current company ID if available
+      const currentCompanyId = localStorage.getItem('current_company_id');
+      if (currentCompanyId) {
+        formData.append('company_id', currentCompanyId);
+      }
+      
+      const response = await fetch('/api/users', {
+        method: 'POST',
+        body: formData,
+      });
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(errorText || 'Kon gebruiker niet toevoegen');
+      }
+      
+      const data = await response.json();
+      if (data.success) {
+        await loadUsers();
+        alert(`Gebruiker ${email} succesvol toegevoegd aan bedrijfsomgeving`);
+      } else {
+        throw new Error(data.error || 'Kon gebruiker niet toevoegen');
+      }
+    } catch (error: any) {
+      console.error('Error adding user:', error);
+      alert(error.message || 'Kon gebruiker niet toevoegen. Probeer het opnieuw.');
+    }
+  };
+
   return (
     <div className="max-w-7xl mx-auto">
       <div className="mb-8">
         <div className="flex items-center justify-between gap-4">
           <div>
-            <h1 className="text-3xl font-bold text-barnes-dark-violet mb-2">Digitale Werknemers</h1>
-            <p className="text-barnes-dark-gray">Bekijk en beheer je digitale werknemers per vacature en evaluatie-activiteit</p>
+            <h1 className="text-3xl font-bold text-barnes-dark-violet mb-2">Werknemers</h1>
+            <p className="text-barnes-dark-gray">Bekijk digitale werknemers en echte gebruikers/werknemers in deze tenant</p>
           </div>
           <button
             onClick={() => openPersonaModal()}
@@ -251,43 +330,98 @@ export default function CompanyPersonas() {
         </div>
       </div>
 
-      {/* Persona Cards as Employees/Agents */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
+      {/* Tabs for Digital Employees and Actual Users */}
+      <div className="mb-6 border-b border-gray-200">
+        <div className="flex gap-4">
+          <button
+            onClick={() => setActiveTab('digital')}
+            className={`px-4 py-2 font-medium transition-colors border-b-2 ${
+              activeTab === 'digital'
+                ? 'text-barnes-violet border-barnes-violet'
+                : 'text-barnes-dark-gray border-transparent hover:text-barnes-violet'
+            }`}
+          >
+            Digitale Werknemers ({personas.filter(p => p.is_active).length})
+          </button>
+          <button
+            onClick={() => setActiveTab('users')}
+            className={`px-4 py-2 font-medium transition-colors border-b-2 ${
+              activeTab === 'users'
+                ? 'text-barnes-violet border-barnes-violet'
+                : 'text-barnes-dark-gray border-transparent hover:text-barnes-violet'
+            }`}
+          >
+            Gebruikers/Werknemers ({users.length})
+          </button>
+        </div>
+      </div>
+
+      {/* Digital Employees Tab */}
+      {activeTab === 'digital' && (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 gap-6 mb-6">
         {personas.filter(p => p.is_active).map(persona => {
           const activities = personaActivities[persona.id] || [];
+          const totalEvaluations = activities.reduce((sum, a) => sum + a.activity_count, 0);
+          const evaluationDetails = personaEvaluationDetails[persona.id] || [];
           return (
             <div 
               key={persona.id}
-              className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 cursor-pointer hover:shadow-md transition-shadow"
+              className="bg-white rounded-xl shadow-md border-2 border-gray-200 p-8 cursor-pointer hover:shadow-lg hover:border-barnes-violet/50 transition-all"
               onClick={() => setSelectedPersonaId(selectedPersonaId === persona.id ? null : persona.id)}
             >
-              <div className="flex items-center gap-3 mb-4">
-                <div className="w-12 h-12 rounded-full bg-barnes-violet/10 flex items-center justify-center">
-                  <span className="text-xl font-bold text-barnes-violet">
+              <div className="flex items-start gap-4 mb-6">
+                <div className="w-16 h-16 rounded-full bg-gradient-to-br from-barnes-violet/20 to-barnes-violet/10 flex items-center justify-center flex-shrink-0">
+                  <span className="text-3xl font-bold text-barnes-violet">
                     {persona.display_name[0]}
                   </span>
                 </div>
-                <div>
-                  <h3 className="font-semibold text-barnes-dark-violet">{persona.display_name}</h3>
-                  <p className="text-xs text-barnes-dark-gray">Digitale werknemer</p>
+                <div className="flex-1 min-w-0">
+                  <h3 className="text-xl font-bold text-barnes-dark-violet mb-1">{persona.display_name}</h3>
+                  <p className="text-sm text-barnes-dark-gray mb-2">Digitale werknemer</p>
+                  <p className="text-xs text-barnes-dark-gray font-mono bg-gray-50 px-2 py-1 rounded inline-block">
+                    {persona.name}
+                  </p>
                 </div>
               </div>
               
-              <div className="space-y-2 text-sm">
-                <div className="flex justify-between">
-                  <span className="text-barnes-dark-gray">Actieve vacatures:</span>
-                  <span className="font-medium text-barnes-dark-violet">{activities.length}</span>
+              <div className="space-y-3 text-sm">
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="p-3 bg-barnes-violet/5 rounded-lg border border-barnes-violet/20">
+                    <div className="text-xs text-barnes-dark-gray mb-1">Actieve vacatures</div>
+                    <div className="text-2xl font-bold text-barnes-dark-violet">{activities.length}</div>
+                  </div>
+                  <div className="p-3 bg-green-50 rounded-lg border border-green-200">
+                    <div className="text-xs text-barnes-dark-gray mb-1">Totaal evaluaties</div>
+                    <div className="text-2xl font-bold text-green-700">{totalEvaluations}</div>
+                  </div>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-barnes-dark-gray">Totaal evaluaties:</span>
-                  <span className="font-medium text-barnes-dark-violet">
-                    {activities.reduce((sum, a) => sum + a.activity_count, 0)}
-                  </span>
-                </div>
+                
+                {evaluationDetails.length > 0 && (
+                  <div className="p-3 bg-blue-50 rounded-lg border border-blue-200">
+                    <div className="text-xs text-barnes-dark-gray mb-1">Recente evaluaties</div>
+                    <div className="text-sm font-medium text-blue-700">{evaluationDetails.length}</div>
+                  </div>
+                )}
+                
                 {activities.length > 0 && (
-                  <div className="pt-2 border-t border-gray-200">
+                  <div className="pt-3 border-t border-gray-200">
                     <p className="text-xs text-barnes-dark-gray">
-                      Laatste activiteit: {formatDate(activities[0].last_activity)}
+                      <span className="font-medium">Laatste activiteit:</span> {formatDate(activities[0].last_activity)}
+                    </p>
+                    {activities[0].job_title && (
+                      <p className="text-xs text-barnes-dark-gray mt-1">
+                        Bij: {activities[0].job_title}
+                      </p>
+                    )}
+                  </div>
+                )}
+                
+                {persona.system_prompt && (
+                  <div className="pt-3 border-t border-gray-200">
+                    <p className="text-xs font-medium text-barnes-dark-gray mb-1">Rolbeschrijving</p>
+                    <p className="text-xs text-barnes-dark-gray line-clamp-3">
+                      {persona.system_prompt.substring(0, 150)}
+                      {persona.system_prompt.length > 150 ? '...' : ''}
                     </p>
                   </div>
                 )}
@@ -295,7 +429,79 @@ export default function CompanyPersonas() {
             </div>
           );
         })}
-      </div>
+        </div>
+      )}
+
+      {/* Actual Users/Employees Tab */}
+      {activeTab === 'users' && (
+        <div>
+          {/* Add User Button - Admin functionality */}
+          <div className="mb-6 flex justify-end">
+            <button
+              onClick={() => {
+                const email = prompt('Voer e-mailadres in voor nieuwe gebruiker:');
+                if (email && email.includes('@')) {
+                  handleAddUser(email);
+                } else if (email) {
+                  alert('Voer een geldig e-mailadres in');
+                }
+              }}
+              className="px-4 py-2 bg-barnes-violet text-white rounded-lg hover:bg-barnes-dark-violet transition-colors text-sm"
+            >
+              + Gebruiker toevoegen
+            </button>
+          </div>
+          
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-6">
+            {users.map(user => (
+              <div
+                key={user.id}
+                className="bg-white rounded-xl shadow-md border-2 border-gray-200 p-6 hover:shadow-lg hover:border-barnes-violet/50 transition-all"
+              >
+                <div className="flex items-start gap-4 mb-4">
+                  <div className="w-14 h-14 rounded-full bg-gradient-to-br from-barnes-orange/20 to-barnes-orange/10 flex items-center justify-center flex-shrink-0">
+                    <span className="text-2xl font-bold text-barnes-orange">
+                      {user.name[0]?.toUpperCase() || 'U'}
+                    </span>
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <h3 className="text-lg font-bold text-barnes-dark-violet mb-1">{user.name}</h3>
+                    <p className="text-sm text-barnes-dark-gray mb-1">{user.email}</p>
+                    <span className="inline-block px-2 py-1 text-xs font-medium bg-barnes-violet/10 text-barnes-violet rounded">
+                      {user.role || 'Gebruiker'}
+                    </span>
+                  </div>
+                </div>
+                
+                <div className="pt-3 border-t border-gray-200">
+                  <p className="text-xs text-barnes-dark-gray">
+                    Lid sinds: {new Date(user.created_at).toLocaleDateString('nl-NL')}
+                  </p>
+                </div>
+              </div>
+            ))}
+            {users.length === 0 && (
+              <div className="col-span-full text-center py-12 bg-gray-50 rounded-xl border-2 border-dashed border-gray-300">
+                <p className="text-barnes-dark-gray mb-2">Geen gebruikers gevonden</p>
+                <p className="text-sm text-gray-500 mb-4">Gebruikers worden automatisch toegevoegd wanneer ze inloggen</p>
+                <button
+                  onClick={() => {
+                    const email = prompt('Voer e-mailadres in voor nieuwe gebruiker:');
+                    if (email && email.includes('@')) {
+                      handleAddUser(email);
+                    } else if (email) {
+                      alert('Voer een geldig e-mailadres in');
+                    }
+                  }}
+                  className="px-4 py-2 bg-barnes-violet text-white rounded-lg hover:bg-barnes-dark-violet transition-colors text-sm"
+                >
+                  + Eerste gebruiker toevoegen
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Persona Activity Detail */}
       {selectedPersonaId && personaActivities[selectedPersonaId] && (

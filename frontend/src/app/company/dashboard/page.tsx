@@ -2,6 +2,7 @@
 
 import { useState, useEffect, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
+import ProtectedRoute from '../../../components/ProtectedRoute';
 import CompanyNavigation from '../../../components/CompanyNavigation';
 import CompanyDashboard from '../../../components/CompanyDashboard';
 import CompanyVacatures from '../../../components/CompanyVacatures';
@@ -39,13 +40,24 @@ function CompanyDashboardContent() {
     }
   };
 
+  const [isNavCollapsed, setIsNavCollapsed] = useState(false);
+
   return (
-    <div className="min-h-screen bg-barnes-light-gray">
-      <CompanyNavigation activeModule={activeModule} onModuleChange={setActiveModule} />
-      <div className="md:ml-64 p-4 md:p-8 min-h-screen">
-        {renderModule()}
+    <ProtectedRoute>
+      <div className="min-h-screen bg-barnes-light-gray">
+        <CompanyNavigation 
+          activeModule={activeModule} 
+          onModuleChange={setActiveModule}
+          onCollapsedChange={setIsNavCollapsed}
+        />
+        <div 
+          className="transition-all duration-300 p-4 md:p-8 min-h-screen"
+          style={{ marginLeft: isNavCollapsed ? '4rem' : '16rem' }}
+        >
+          {renderModule()}
+        </div>
       </div>
-    </div>
+    </ProtectedRoute>
   );
 }
 

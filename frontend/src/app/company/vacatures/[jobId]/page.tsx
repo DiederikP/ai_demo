@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
+import ProtectedRoute from '../../../../components/ProtectedRoute';
 import CompanyNavigation from '../../../../components/CompanyNavigation';
 import { buildAnalysisSections, buildExtensionBlock, AnalysisSection, ExtensionBlock } from '../../../../utils/analysis';
 
@@ -26,9 +27,11 @@ interface Candidate {
   conversation_count?: number;
   job_id?: string;
   preferential_job_ids?: string;
+  pipeline_stage?: string;  // 'introduced', 'review', 'first_interview', 'second_interview', 'offer', 'complete'
+  pipeline_status?: string;  // 'active', 'on_hold', 'rejected', 'accepted'
 }
 
-type TabType = 'overview' | 'analysis' | 'candidates' | 'results';
+type TabType = 'overview' | 'analysis' | 'candidates' | 'results' | 'compare';
 
 export default function JobDetailPage() {
   const params = useParams();
@@ -45,6 +48,8 @@ export default function JobDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<TabType>('overview');
   const [conversationModal, setConversationModal] = useState<{ open: boolean; candidate: Candidate | null }>({ open: false, candidate: null });
+  const [draggedCandidateId, setDraggedCandidateId] = useState<string | null>(null);
+  const [dragOverStage, setDragOverStage] = useState<string | null>(null);
   const [conversationForm, setConversationForm] = useState({
     title: '',
     summary: '',
@@ -56,6 +61,22 @@ export default function JobDetailPage() {
   const [aiMatches, setAiMatches] = useState<any[]>([]);
   const [isMatching, setIsMatching] = useState(false);
   const [showMatches, setShowMatches] = useState(false);
+  const [selectedCandidatesForCompare, setSelectedCandidatesForCompare] = useState<string[]>([]);
+  const [showScheduleModal, setShowScheduleModal] = useState(false);
+  const [scheduledConversationId, setScheduledConversationId] = useState<string | null>(null);
+  const [scheduleForm, setScheduleForm] = useState({
+    date: '',
+    time: '',
+    type: 'Eerste Interview',
+    location: 'Teams/Zoom',
+    notes: '',
+  });
+  const [isSavingSchedule, setIsSavingSchedule] = useState(false);
+  const [showOfferCandidateModal, setShowOfferCandidateModal] = useState(false);
+  const [availableCandidates, setAvailableCandidates] = useState<Candidate[]>([]);
+  const [selectedCandidatesToOffer, setSelectedCandidatesToOffer] = useState<string[]>([]);
+  const [isLoadingAvailableCandidates, setIsLoadingAvailableCandidates] = useState(false);
+  const [isOfferingCandidates, setIsOfferingCandidates] = useState(false);
 
   useEffect(() => {
     loadData();
@@ -214,13 +235,159 @@ export default function JobDetailPage() {
         const error = await response.json().catch(() => ({ error: 'Onbekende fout' }));
         throw new Error(error.error || error.detail || 'Opslaan mislukt');
       }
+      const result = await response.json();
+      
+      // After saving, show schedule modal
+      setScheduledConversationId(result.conversation?.id || null);
       closeConversationModal();
+      setShowScheduleModal(true);
+      
+      // Pre-fill date with tomorrow
+      const tomorrow = new Date();
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      setScheduleForm({
+        ...scheduleForm,
+        date: tomorrow.toISOString().split('T')[0],
+      });
+      
       await loadData();
     } catch (error: any) {
       alert(error.message || 'Opslaan mislukt');
     } finally {
       setIsSavingConversation(false);
     }
+  };
+
+  const loadAvailableCandidates = async () => {
+    setIsLoadingAvailableCandidates(true);
+    try {
+      // Get all candidates that are not yet assigned to this vacancy
+      const response = await fetch('/api/candidates');
+      if (response.ok) {
+        const data = await response.json();
+        // Filter out candidates already assigned to this vacancy
+        const currentCandidateIds = candidates.map(c => c.id);
+        const available = (data.candidates || []).filter((c: Candidate) => {
+          // Not already in this vacancy
+          if (currentCandidateIds.includes(c.id)) return false;
+          // Not already assigned to this job
+          if (c.job_id === jobId) return false;
+          // Not in preferential_job_ids
+          if (c.preferential_job_ids && c.preferential_job_ids.includes(jobId)) return false;
+          return true;
+        });
+        setAvailableCandidates(available);
+      }
+    } catch (error: any) {
+      console.error('Error loading available candidates:', error);
+      alert('Fout bij laden kandidaten: ' + (error.message || 'Onbekende fout'));
+    } finally {
+      setIsLoadingAvailableCandidates(false);
+    }
+  };
+
+  const handleOfferCandidates = async () => {
+    if (selectedCandidatesToOffer.length === 0) {
+      alert('Selecteer minimaal één kandidaat');
+      return;
+    }
+
+    setIsOfferingCandidates(true);
+    try {
+      // Assign each candidate to this job
+      for (const candidateId of selectedCandidatesToOffer) {
+        // Update candidate's job assignment
+        // If candidate already has a job_id, add to preferential_job_ids instead
+        const candidate = availableCandidates.find(c => c.id === candidateId);
+        if (candidate) {
+          const response = await fetch(`/api/candidates/${candidateId}/pipeline`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              // If candidate has no job_id, set it. Otherwise, add to preferential_job_ids
+              ...(candidate.job_id 
+                ? { preferential_job_ids: candidate.preferential_job_ids 
+                    ? `${candidate.preferential_job_ids},${jobId}`
+                    : jobId }
+                : { job_id: jobId }),
+              pipeline_stage: 'introduced',
+              pipeline_status: 'active',
+            }),
+          });
+
+          if (!response.ok) {
+            const error = await response.json().catch(() => ({ error: 'Unknown error' }));
+            console.error(`Failed to assign candidate ${candidateId}:`, error);
+          }
+        }
+      }
+
+      // Reload data
+      await loadData();
+      setShowOfferCandidateModal(false);
+      setSelectedCandidatesToOffer([]);
+      alert(`${selectedCandidatesToOffer.length} kandidaat(en) succesvol aangeboden voor deze vacature`);
+    } catch (error: any) {
+      console.error('Error offering candidates:', error);
+      alert('Fout bij aanbieden kandidaten: ' + (error.message || 'Onbekende fout'));
+    } finally {
+      setIsOfferingCandidates(false);
+    }
+  };
+
+  const handleSaveSchedule = async () => {
+    if (!scheduleForm.date || !scheduleForm.time || !conversationModal.candidate) {
+      alert('Datum en tijd zijn verplicht');
+      return;
+    }
+    
+    setIsSavingSchedule(true);
+    try {
+      // TODO: Toekomstige integratie met bestaande agenda's
+      // - Integreer met Google Calendar API om automatisch afspraken te creëren en uitnodigingen te versturen
+      // - Integreer met Microsoft Outlook/Exchange om afspraken in Outlook agenda te plaatsen
+      // - Stuur automatisch calendar invites (ICS-bestanden) naar kandidaat en relevante teamleden
+      // - Synchroniseer met bestaande beschikbaarheid van interviewers
+      // - Voeg reminders en notificaties toe voor zowel recruiter als kandidaat
+      // - Sla geplande afspraken op in database voor tracking en follow-up
+      
+      const scheduledDateTime = new Date(`${scheduleForm.date}T${scheduleForm.time}`);
+      
+      // For now, we'll just show a confirmation
+      // In a full implementation, this would:
+      // 1. Create calendar event via API (Google Calendar / Outlook)
+      // 2. Send calendar invite to candidate
+      // 3. Send invite to relevant team members
+      // 4. Save appointment to database with candidate_id, job_id, scheduled_at, etc.
+      // 5. Set up reminders
+      
+      alert(`Volgende stap gepland voor ${conversationModal.candidate.name}:\n${scheduledDateTime.toLocaleString('nl-NL')}\n\nType: ${scheduleForm.type}\nLocatie: ${scheduleForm.location}\n\n(Toekomst: Dit zal automatisch worden toegevoegd aan agenda's en uitnodigingen worden verstuurd)`);
+      
+      setShowScheduleModal(false);
+      setScheduledConversationId(null);
+      setScheduleForm({
+        date: '',
+        time: '',
+        type: 'Eerste Interview',
+        location: 'Teams/Zoom',
+        notes: '',
+      });
+    } catch (error: any) {
+      alert(error.message || 'Plannen mislukt');
+    } finally {
+      setIsSavingSchedule(false);
+    }
+  };
+
+  const generateTimeSlots = () => {
+    const slots = [];
+    for (let hour = 9; hour < 17; hour++) {
+      for (let minute = 0; minute < 60; minute += 30) {
+        const timeStr = `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
+        slots.push(timeStr);
+      }
+    }
+    return slots;
   };
 
   const evaluations = useMemo(
@@ -236,25 +403,125 @@ export default function JobDetailPage() {
   const extensionBlock = buildExtensionBlock(aiAnalysis);
 
   const getCandidateStage = (candidate: Candidate): string => {
+    // Use pipeline_stage from backend if available, otherwise compute from activity
+    if (candidate.pipeline_stage) {
+      return candidate.pipeline_stage;
+    }
+    
+    // Fallback: compute stage based on activity
     const candidateResults = results.filter(r => r.candidate_id === candidate.id);
     const candidateConversations = conversations.filter(c => c.candidate_id === candidate.id);
     const hasEvaluations = candidateResults.some(r => r.result_type === 'evaluation');
     const hasDebates = candidateResults.some(r => r.result_type === 'debate');
     const conversationCount = candidateConversations.length;
 
-    if (!hasEvaluations && !hasDebates && conversationCount === 0) return 'wachtend';
-    if (conversationCount === 0) return 'in_behandeling';
-    if (conversationCount === 1) return 'na_1e_gesprek';
-    if (conversationCount >= 2 && conversationCount < 4) return 'multi_round';
-    return 'afgerond';
+    if (!hasEvaluations && !hasDebates && conversationCount === 0) return 'introduced';
+    if (conversationCount === 0) return 'review';
+    if (conversationCount === 1) return 'first_interview';
+    if (conversationCount >= 2 && conversationCount < 4) return 'second_interview';
+    return 'complete';
+  };
+
+  const handleCandidateDragStart = (e: React.DragEvent, candidateId: string) => {
+    setDraggedCandidateId(candidateId);
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleCandidateDragOver = (e: React.DragEvent, stageKey: string) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    setDragOverStage(stageKey);
+  };
+
+  const handleCandidateDragLeave = () => {
+    setDragOverStage(null);
+  };
+
+  const handleCandidateDrop = async (e: React.DragEvent, targetStage: string) => {
+    e.preventDefault();
+    setDragOverStage(null);
+    
+    if (!draggedCandidateId) return;
+    
+    const candidate = candidates.find(c => c.id === draggedCandidateId);
+    if (!candidate) return;
+    
+    const currentStage = getCandidateStage(candidate);
+    if (currentStage === targetStage) {
+      setDraggedCandidateId(null);
+      return;
+    }
+    
+    try {
+      // Update candidate pipeline stage in backend
+      const response = await fetch(`/api/candidates/${candidate.id}/pipeline`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pipeline_stage: targetStage })
+      });
+      
+      if (!response.ok) {
+        throw new Error('Failed to update candidate pipeline stage');
+      }
+      
+      // Update local state
+      setCandidates(prev => prev.map(c => 
+        c.id === candidate.id ? { ...c, pipeline_stage: targetStage } : c
+      ));
+    } catch (error) {
+      console.error('Error updating candidate pipeline:', error);
+      alert('Kon kandidaat pipeline stage niet bijwerken. Probeer het opnieuw.');
+    } finally {
+      setDraggedCandidateId(null);
+    }
+  };
+
+  const handleCandidateDragEnd = () => {
+    setDraggedCandidateId(null);
+    setDragOverStage(null);
+  };
+
+  // Pipeline stages configuration
+  const pipelineStages = {
+    introduced: { 
+      title: 'Geïntroduceerd', 
+      description: 'Nieuwe kandidaten die zijn toegevoegd',
+      color: 'bg-gray-100 border-gray-300 text-gray-700'
+    },
+    review: { 
+      title: 'Review/Vergelijking', 
+      description: 'Kandidaten worden beoordeeld en vergeleken',
+      color: 'bg-blue-50 border-blue-300 text-blue-700'
+    },
+    first_interview: { 
+      title: 'Eerste Interview', 
+      description: 'Eerste gesprek + evaluatie',
+      color: 'bg-yellow-50 border-yellow-300 text-yellow-700'
+    },
+    second_interview: { 
+      title: 'Tweede Interview', 
+      description: 'Tweede gesprek/technische test + evaluatie',
+      color: 'bg-orange-50 border-orange-300 text-orange-700'
+    },
+    offer: { 
+      title: 'Aanbod', 
+      description: 'Aanbod is gedaan',
+      color: 'bg-purple-50 border-purple-300 text-purple-700'
+    },
+    complete: { 
+      title: 'Voltooid', 
+      description: 'Proces afgerond (succesvol of niet)',
+      color: 'bg-green-50 border-green-300 text-green-700'
+    },
   };
 
   const candidateStages = {
-    wachtend: candidates.filter(c => getCandidateStage(c) === 'wachtend'),
-    in_behandeling: candidates.filter(c => getCandidateStage(c) === 'in_behandeling'),
-    na_1e_gesprek: candidates.filter(c => getCandidateStage(c) === 'na_1e_gesprek'),
-    multi_round: candidates.filter(c => getCandidateStage(c) === 'multi_round'),
-    afgerond: candidates.filter(c => getCandidateStage(c) === 'afgerond'),
+    introduced: candidates.filter(c => getCandidateStage(c) === 'introduced'),
+    review: candidates.filter(c => getCandidateStage(c) === 'review'),
+    first_interview: candidates.filter(c => getCandidateStage(c) === 'first_interview'),
+    second_interview: candidates.filter(c => getCandidateStage(c) === 'second_interview'),
+    offer: candidates.filter(c => getCandidateStage(c) === 'offer'),
+    complete: candidates.filter(c => getCandidateStage(c) === 'complete'),
   };
 
   if (loading) {
@@ -287,7 +554,7 @@ export default function JobDetailPage() {
           }
         }}
       />
-      <div className="md:ml-64 p-4 md:p-8">
+      <div className="p-4 md:p-8 transition-all duration-300" style={{ marginLeft: 'var(--nav-width, 16rem)' }}>
         <div className="max-w-7xl mx-auto">
           <div className="mb-6">
             <button
@@ -346,6 +613,19 @@ export default function JobDetailPage() {
               >
                 Resultaten ({results.length})
               </button>
+              <button
+                onClick={() => {
+                  setActiveTab('compare');
+                  setSelectedCandidatesForCompare([]);
+                }}
+                className={`px-6 py-3 text-sm font-medium transition-colors ${
+                  activeTab === 'compare'
+                    ? 'text-barnes-violet border-b-2 border-barnes-violet'
+                    : 'text-barnes-dark-gray hover:text-barnes-violet'
+                }`}
+              >
+                Vergelijk Kandidaten
+              </button>
             </div>
           </div>
 
@@ -373,56 +653,98 @@ export default function JobDetailPage() {
 
               {/* Candidate Pipeline */}
               <div className="bg-white rounded-xl border border-gray-200 p-6">
-                <h2 className="text-xl font-semibold text-barnes-dark-violet mb-4">Kandidaat Pipeline</h2>
-                <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
-                  {Object.entries({
-                    wachtend: { title: 'Wachtend op actie', candidates: candidateStages.wachtend },
-                    in_behandeling: { title: 'In behandeling', candidates: candidateStages.in_behandeling },
-                    na_1e_gesprek: { title: 'Na 1e gesprek', candidates: candidateStages.na_1e_gesprek },
-                    multi_round: { title: '2e/3e gesprek', candidates: candidateStages.multi_round },
-                    afgerond: { title: 'Afgerond', candidates: candidateStages.afgerond },
-                  }).map(([key, { title, candidates: stageCandidates }]) => (
-                    <div key={key} className="bg-gray-50 rounded-lg border border-gray-200 p-4">
-                      <h3 className="text-sm font-semibold text-barnes-dark-violet mb-2">{title}</h3>
-                      <p className="text-xs text-barnes-dark-gray mb-3">{stageCandidates.length} kandidaat{stageCandidates.length !== 1 ? 'en' : ''}</p>
-                      <div className="space-y-2 max-h-64 overflow-y-auto">
-                        {stageCandidates.map(candidate => (
-                          <div
-                            key={candidate.id}
-                            className="p-2 bg-white rounded border border-gray-200 hover:border-barnes-violet transition-colors"
-                          >
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-xl font-semibold text-barnes-dark-violet">Kandidaat Pipeline</h2>
+                  <div className="text-sm text-barnes-dark-gray">
+                    {candidates.length} totaal kandidaat{candidates.length !== 1 ? 'en' : ''}
+                  </div>
+                </div>
+                
+                {/* Progress Bar */}
+                <div className="mb-6">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-sm font-medium text-barnes-dark-gray">Pipeline Voortgang</span>
+                    <span className="text-sm font-semibold text-barnes-dark-violet">
+                      {Object.values(candidateStages).reduce((sum, stage) => sum + stage.length, 0)} / {candidates.length}
+                    </span>
+                  </div>
+                  <div className="w-full bg-gray-200 rounded-full h-3 overflow-hidden">
+                    <div 
+                      className="bg-gradient-to-r from-barnes-violet to-purple-600 h-3 rounded-full transition-all duration-500"
+                      style={{ 
+                        width: `${(candidates.length > 0 ? (candidateStages.complete.length / candidates.length) * 100 : 0)}%` 
+                      }}
+                    />
+                  </div>
+                </div>
+                
+                <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4">
+                  {Object.entries(pipelineStages).map(([key, stageConfig]) => {
+                    const stageCandidates = candidateStages[key as keyof typeof candidateStages];
+                    return (
+                      <div
+                        key={key}
+                        onDragOver={(e) => handleCandidateDragOver(e, key)}
+                        onDragLeave={handleCandidateDragLeave}
+                        onDrop={(e) => handleCandidateDrop(e, key)}
+                        className={`rounded-lg border-2 p-4 transition-all ${
+                          dragOverStage === key
+                            ? 'border-barnes-violet bg-barnes-violet/10 scale-105 shadow-lg'
+                            : stageConfig.color
+                        }`}
+                      >
+                        <h3 className="text-sm font-semibold mb-1">{stageConfig.title}</h3>
+                        <p className="text-xs opacity-75 mb-3">{stageConfig.description}</p>
+                        <p className="text-xs font-medium mb-3">{stageCandidates.length} kandidaat{stageCandidates.length !== 1 ? 'en' : ''}</p>
+                        <div className="space-y-2 max-h-64 overflow-y-auto">
+                          {stageCandidates.map(candidate => (
                             <div
-                              className="cursor-pointer mb-1.5"
-                              onClick={() => router.push(`/company/kandidaten/${candidate.id}`)}
+                              key={candidate.id}
+                              draggable
+                              onDragStart={(e) => handleCandidateDragStart(e, candidate.id)}
+                              onDragEnd={handleCandidateDragEnd}
+                              className={`p-2 bg-white rounded border border-gray-200 hover:border-barnes-violet transition-colors cursor-move ${
+                                draggedCandidateId === candidate.id ? 'opacity-50 scale-95' : ''
+                              }`}
                             >
-                              <p className="text-xs font-medium text-barnes-dark-violet truncate">{candidate.name}</p>
-                              <p className="text-[10px] text-barnes-dark-gray truncate">{candidate.email}</p>
-                            </div>
-                            <div className="flex gap-1 mt-1.5">
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  openConversationModal(candidate);
-                                }}
-                                className="flex-1 px-1.5 py-0.5 text-[10px] border border-barnes-violet text-barnes-violet rounded hover:bg-barnes-violet hover:text-white transition-colors"
+                              <div
+                                className="cursor-pointer mb-1.5"
+                                onClick={() => router.push(`/company/kandidaten/${candidate.id}`)}
                               >
-                                Gesprek
-                              </button>
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  router.push(`/company/dashboard?module=dashboard&candidateId=${candidate.id}&jobId=${jobId}`);
-                                }}
-                                className="flex-1 px-1.5 py-0.5 text-[10px] border border-barnes-orange text-barnes-orange rounded hover:bg-barnes-orange hover:text-white transition-colors"
-                              >
-                                Eval.
-                              </button>
+                                <p className="text-xs font-medium text-barnes-dark-violet truncate">{candidate.name}</p>
+                                <p className="text-[10px] text-barnes-dark-gray truncate">{candidate.email}</p>
+                              </div>
+                              <div className="flex gap-1 mt-1.5">
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    openConversationModal(candidate);
+                                  }}
+                                  className="flex-1 px-1.5 py-0.5 text-[10px] border border-barnes-violet text-barnes-violet rounded hover:bg-barnes-violet hover:text-white transition-colors"
+                                >
+                                  Gesprek
+                                </button>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    router.push(`/company/dashboard?module=dashboard&candidateId=${candidate.id}&jobId=${jobId}`);
+                                  }}
+                                  className="flex-1 px-1.5 py-0.5 text-[10px] border border-barnes-orange text-barnes-orange rounded hover:bg-barnes-orange hover:text-white transition-colors"
+                                >
+                                  Eval.
+                                </button>
+                              </div>
                             </div>
-                          </div>
-                        ))}
+                          ))}
+                          {stageCandidates.length === 0 && dragOverStage === key && (
+                            <div className="p-4 border-2 border-dashed border-barnes-violet rounded text-center text-xs text-barnes-dark-gray">
+                              Laat hier los
+                            </div>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             </div>
@@ -482,6 +804,15 @@ export default function JobDetailPage() {
                       {candidates.length} kandidaat{candidates.length === 1 ? '' : 'en'}
                     </span>
                     <button
+                      onClick={() => {
+                        loadAvailableCandidates();
+                        setShowOfferCandidateModal(true);
+                      }}
+                      className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm font-medium"
+                    >
+                      + Kandidaat Aanbieden
+                    </button>
+                    <button
                       onClick={handleAiMatching}
                       disabled={isMatching || candidates.length === 0}
                       className="px-4 py-2 bg-barnes-violet text-white rounded-lg hover:bg-barnes-dark-violet transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium"
@@ -491,11 +822,11 @@ export default function JobDetailPage() {
                   </div>
                 </div>
                 
-                {/* AI Matches Section */}
+                {/* AI Matches Section - Simplified */}
                 {showMatches && aiMatches.length > 0 && (
                   <div className="mb-6 p-4 bg-gradient-to-r from-green-50 to-blue-50 border border-green-200 rounded-lg">
                     <div className="flex items-center justify-between mb-3">
-                      <h3 className="text-lg font-semibold text-barnes-dark-violet">🤖 AI Match Resultaten</h3>
+                      <h3 className="text-lg font-semibold text-barnes-dark-violet">🤖 AI Matches</h3>
                       <button
                         onClick={() => setShowMatches(false)}
                         className="text-sm text-barnes-dark-gray hover:text-barnes-violet"
@@ -504,67 +835,30 @@ export default function JobDetailPage() {
                       </button>
                     </div>
                     <p className="text-sm text-barnes-dark-gray mb-4">
-                      Kandidaten gesorteerd op match score (hoogste eerst)
+                      Kandidaten in database die mogelijk geschikt zijn voor deze rol
                     </p>
-                    <div className="space-y-3">
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
                       {aiMatches.map((match, idx) => (
-                        <div
+                        <button
                           key={match.candidate_id}
-                          className="bg-white border-2 rounded-lg p-4"
+                          onClick={() => router.push(`/company/kandidaten/${match.candidate_id}`)}
+                          className="bg-white border-2 rounded-lg p-3 hover:border-barnes-violet transition-colors text-left"
                           style={{
-                            borderColor: match.match_score >= 8 ? '#10b981' : match.match_score >= 6 ? '#f59e0b' : '#ef4444',
-                            borderWidth: idx === 0 ? '3px' : '2px'
+                            borderColor: match.match_score >= 8 ? '#10b981' : match.match_score >= 6 ? '#f59e0b' : '#ef4444'
                           }}
                         >
-                          <div className="flex items-start justify-between mb-2">
-                            <div className="flex-1">
-                              <div className="flex items-center gap-3 mb-2">
-                                <span className="text-2xl font-bold text-barnes-violet">
-                                  {match.match_score.toFixed(1)}
-                                </span>
-                                <span className="text-sm text-barnes-dark-gray">/ 10</span>
-                                {idx === 0 && (
-                                  <span className="px-2 py-1 bg-green-100 text-green-800 text-xs font-semibold rounded">
-                                    Beste Match
-                                  </span>
-                                )}
-                              </div>
-                              <p className="font-semibold text-barnes-dark-violet">{match.candidate_name}</p>
-                            </div>
-                            <button
-                              onClick={() => router.push(`/company/kandidaten/${match.candidate_id}`)}
-                              className="px-3 py-1.5 text-xs border border-barnes-violet text-barnes-violet rounded-lg hover:bg-barnes-violet hover:text-white transition-colors"
-                            >
-                              Bekijk →
-                            </button>
+                          <div className="flex items-center justify-between mb-2">
+                            <span className="text-lg font-bold text-barnes-violet">
+                              {match.match_score.toFixed(1)}
+                            </span>
+                            {idx === 0 && (
+                              <span className="px-2 py-0.5 bg-green-100 text-green-800 text-xs font-semibold rounded">
+                                Beste
+                              </span>
+                            )}
                           </div>
-                          <p className="text-sm text-barnes-dark-gray mb-3">{match.reasoning}</p>
-                          {match.strengths && match.strengths.length > 0 && (
-                            <div className="mb-2">
-                              <p className="text-xs font-semibold text-green-700 mb-1">Sterke punten:</p>
-                              <ul className="text-xs text-barnes-dark-gray list-disc list-inside">
-                                {match.strengths.map((strength: string, i: number) => (
-                                  <li key={i}>{strength}</li>
-                                ))}
-                              </ul>
-                            </div>
-                          )}
-                          {match.concerns && match.concerns.length > 0 && (
-                            <div>
-                              <p className="text-xs font-semibold text-orange-700 mb-1">Aandachtspunten:</p>
-                              <ul className="text-xs text-barnes-dark-gray list-disc list-inside">
-                                {match.concerns.map((concern: string, i: number) => (
-                                  <li key={i}>{concern}</li>
-                                ))}
-                              </ul>
-                            </div>
-                          )}
-                          {match.evaluation_score && (
-                            <p className="text-xs text-barnes-dark-gray mt-2">
-                              Eerdere evaluatie score: {match.evaluation_score.toFixed(1)}/10
-                            </p>
-                          )}
-                        </div>
+                          <p className="font-semibold text-barnes-dark-violet text-sm">{match.candidate_name}</p>
+                        </button>
                       ))}
                     </div>
                   </div>
@@ -694,6 +988,384 @@ export default function JobDetailPage() {
             </div>
           )}
 
+          {/* Compare Tab */}
+          {activeTab === 'compare' && (
+            <div className="space-y-6">
+              <div className="bg-white rounded-xl border border-gray-200 p-6">
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-xl font-semibold text-barnes-dark-violet">Vergelijk Kandidaten</h2>
+                  <div className="text-sm text-barnes-dark-gray">
+                    Selecteer 2-5 kandidaten om te vergelijken
+                  </div>
+                </div>
+                
+                {candidates.length === 0 ? (
+                  <p className="text-sm text-barnes-dark-gray">
+                    Nog geen kandidaten gekoppeld aan deze vacature.
+                  </p>
+                ) : (
+                  <>
+                    {/* Candidate Selection */}
+                    <div className="mb-6 p-4 bg-barnes-light-gray rounded-lg">
+                      <p className="text-sm font-medium text-barnes-dark-violet mb-3">Selecteer kandidaten om te vergelijken:</p>
+                      <div className="flex flex-wrap gap-2">
+                        {candidates.map(candidate => {
+                          const isSelected = selectedCandidatesForCompare.includes(candidate.id);
+                          return (
+                            <button
+                              key={candidate.id}
+                              onClick={() => {
+                                if (isSelected) {
+                                  setSelectedCandidatesForCompare(prev => prev.filter(id => id !== candidate.id));
+                                } else {
+                                  if (selectedCandidatesForCompare.length < 5) {
+                                    setSelectedCandidatesForCompare(prev => [...prev, candidate.id]);
+                                  } else {
+                                    alert('Maximaal 5 kandidaten kunnen worden vergeleken');
+                                  }
+                                }
+                              }}
+                              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                                isSelected
+                                  ? 'bg-barnes-violet text-white border-2 border-barnes-violet'
+                                  : 'bg-white text-barnes-dark-violet border-2 border-gray-300 hover:border-barnes-violet'
+                              }`}
+                              disabled={!isSelected && selectedCandidatesForCompare.length >= 5}
+                            >
+                              {candidate.name} {isSelected && '✓'}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      {selectedCandidatesForCompare.length > 0 && (
+                        <button
+                          onClick={() => setSelectedCandidatesForCompare([])}
+                          className="mt-3 text-sm text-barnes-violet hover:text-barnes-dark-violet"
+                        >
+                          Selectie wissen
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Comparison Table */}
+                    {selectedCandidatesForCompare.length >= 2 ? (
+                      <div className="overflow-x-auto">
+                        <table className="w-full border-collapse">
+                          <thead>
+                            <tr className="border-b-2 border-gray-300">
+                              <th className="p-3 text-left text-sm font-semibold text-barnes-dark-violet bg-barnes-light-gray sticky left-0 z-10">Meting</th>
+                              {selectedCandidatesForCompare.map(candidateId => {
+                                const candidate = candidates.find(c => c.id === candidateId);
+                                return (
+                                  <th key={candidateId} className="p-3 text-center text-sm font-semibold text-barnes-dark-violet bg-barnes-light-gray min-w-[200px]">
+                                    <div>
+                                      <p className="font-semibold">{candidate?.name || 'Onbekend'}</p>
+                                      <p className="text-xs text-barnes-dark-gray font-normal">{candidate?.email || ''}</p>
+                                    </div>
+                                  </th>
+                                );
+                              })}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {/* Pipeline Stage */}
+                            <tr className="border-b border-gray-200 hover:bg-gray-50">
+                              <td className="p-3 text-sm font-medium text-barnes-dark-gray bg-barnes-light-gray sticky left-0 z-10">Pipeline Status</td>
+                              {selectedCandidatesForCompare.map(candidateId => {
+                                const candidate = candidates.find(c => c.id === candidateId);
+                                const stage = getCandidateStage(candidate!);
+                                const stageConfig = pipelineStages[stage as keyof typeof pipelineStages];
+                                return (
+                                  <td key={candidateId} className="p-3 text-center">
+                                    <span className={`px-3 py-1 rounded-full text-xs font-medium ${stageConfig?.color || 'bg-gray-100'}`}>
+                                      {stageConfig?.title || stage}
+                                    </span>
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                            
+                            {/* Latest Evaluation Score */}
+                            <tr className="border-b border-gray-200 hover:bg-gray-50">
+                              <td className="p-3 text-sm font-medium text-barnes-dark-gray bg-barnes-light-gray sticky left-0 z-10">Laatste Evaluatie Score</td>
+                              {selectedCandidatesForCompare.map(candidateId => {
+                                const candidateResults = results.filter(r => r.candidate_id === candidateId && r.result_type === 'evaluation');
+                                const latestResult = candidateResults.sort((a, b) => 
+                                  new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+                                )[0];
+                                
+                                let score = null;
+                                if (latestResult) {
+                                  try {
+                                    const data = typeof latestResult.result_data === 'string' 
+                                      ? JSON.parse(latestResult.result_data) 
+                                      : latestResult.result_data;
+                                    score = data.combined_score || data.total_score || null;
+                                  } catch {
+                                    score = null;
+                                  }
+                                }
+                                
+                                return (
+                                  <td key={candidateId} className="p-3 text-center">
+                                    {score !== null ? (
+                                      <div>
+                                        <span className={`text-lg font-bold ${
+                                          score >= 8 ? 'text-green-600' : score >= 6 ? 'text-yellow-600' : 'text-red-600'
+                                        }`}>
+                                          {Number(score).toFixed(1)}
+                                        </span>
+                                        <span className="text-xs text-barnes-dark-gray block">/ 10</span>
+                                      </div>
+                                    ) : (
+                                      <span className="text-xs text-barnes-dark-gray">Nog niet geëvalueerd</span>
+                                    )}
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                            
+                            {/* Evaluation Count */}
+                            <tr className="border-b border-gray-200 hover:bg-gray-50">
+                              <td className="p-3 text-sm font-medium text-barnes-dark-gray bg-barnes-light-gray sticky left-0 z-10">Aantal Evaluaties</td>
+                              {selectedCandidatesForCompare.map(candidateId => {
+                                const candidateResults = results.filter(r => r.candidate_id === candidateId && r.result_type === 'evaluation');
+                                return (
+                                  <td key={candidateId} className="p-3 text-center text-sm">
+                                    {candidateResults.length}
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                            
+                            {/* Debate Count */}
+                            <tr className="border-b border-gray-200 hover:bg-gray-50">
+                              <td className="p-3 text-sm font-medium text-barnes-dark-gray bg-barnes-light-gray sticky left-0 z-10">Aantal Debatten</td>
+                              {selectedCandidatesForCompare.map(candidateId => {
+                                const candidateResults = results.filter(r => r.candidate_id === candidateId && r.result_type === 'debate');
+                                return (
+                                  <td key={candidateId} className="p-3 text-center text-sm">
+                                    {candidateResults.length}
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                            
+                            {/* Conversation Count */}
+                            <tr className="border-b border-gray-200 hover:bg-gray-50">
+                              <td className="p-3 text-sm font-medium text-barnes-dark-gray bg-barnes-light-gray sticky left-0 z-10">Aantal Gesprekken</td>
+                              {selectedCandidatesForCompare.map(candidateId => {
+                                const candidateConversations = conversations.filter(c => c.candidate_id === candidateId);
+                                return (
+                                  <td key={candidateId} className="p-3 text-center text-sm">
+                                    {candidateConversations.length}
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                            
+                            {/* Days in Process */}
+                            <tr className="border-b border-gray-200 hover:bg-gray-50">
+                              <td className="p-3 text-sm font-medium text-barnes-dark-gray bg-barnes-light-gray sticky left-0 z-10">Dagen in Proces</td>
+                              {selectedCandidatesForCompare.map(candidateId => {
+                                const candidate = candidates.find(c => c.id === candidateId);
+                                if (!candidate) return <td key={candidateId} className="p-3 text-center text-sm">—</td>;
+                                
+                                const createdDate = new Date(candidate.created_at);
+                                const now = new Date();
+                                const daysInProcess = Math.floor((now.getTime() - createdDate.getTime()) / (1000 * 60 * 60 * 24));
+                                
+                                return (
+                                  <td key={candidateId} className="p-3 text-center text-sm">
+                                    {daysInProcess} dag{daysInProcess !== 1 ? 'en' : ''}
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                            
+                            {/* Actions */}
+                            <tr className="border-b border-gray-200">
+                              <td className="p-3 text-sm font-medium text-barnes-dark-gray bg-barnes-light-gray sticky left-0 z-10">Acties</td>
+                              {selectedCandidatesForCompare.map(candidateId => {
+                                const candidate = candidates.find(c => c.id === candidateId);
+                                return (
+                                  <td key={candidateId} className="p-3 text-center">
+                                    <div className="flex flex-col gap-2 items-center">
+                                      <button
+                                        onClick={() => router.push(`/company/kandidaten/${candidateId}`)}
+                                        className="px-3 py-1 text-xs border border-barnes-violet text-barnes-violet rounded hover:bg-barnes-violet hover:text-white transition-colors"
+                                      >
+                                        Bekijk Details
+                                      </button>
+                                      <button
+                                        onClick={() => router.push(`/company/dashboard?module=dashboard&candidateId=${candidateId}&jobId=${jobId}`)}
+                                        className="px-3 py-1 text-xs border border-barnes-orange text-barnes-orange rounded hover:bg-barnes-orange hover:text-white transition-colors"
+                                      >
+                                        Evalueer
+                                      </button>
+                                    </div>
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : (
+                      <div className="text-center py-12 text-barnes-dark-gray">
+                        <p className="mb-2">Selecteer minimaal 2 kandidaten om te vergelijken</p>
+                        <p className="text-sm">Klik op de namen hierboven om kandidaten te selecteren</p>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Schedule Modal */}
+          {showScheduleModal && conversationModal.candidate && (
+            <div
+              className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4"
+              onClick={(e) => {
+                if (e.target === e.currentTarget) {
+                  setShowScheduleModal(false);
+                  setScheduledConversationId(null);
+                }
+              }}
+            >
+              <div className="bg-white rounded-2xl max-w-lg w-full p-6 space-y-4 max-h-[90vh] overflow-y-auto">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-xl font-semibold text-barnes-dark-violet">Plan volgende stap</h3>
+                    <p className="text-sm text-barnes-dark-gray">{conversationModal.candidate.name}</p>
+                  </div>
+                  <button 
+                    onClick={() => {
+                      setShowScheduleModal(false);
+                      setScheduledConversationId(null);
+                    }} 
+                    className="text-gray-500 hover:text-gray-700"
+                  >
+                    ✕
+                  </button>
+                </div>
+                
+                <div className="space-y-4">
+                  <div className="p-4 bg-green-50 border border-green-200 rounded-lg">
+                    <p className="text-sm text-green-800 font-medium">✓ Feedbackronde opgeslagen</p>
+                    <p className="text-xs text-green-700 mt-1">Plan nu de volgende stap in het proces</p>
+                  </div>
+                  
+                  <div>
+                    <label className="text-sm font-medium text-barnes-dark-gray">Type volgende stap</label>
+                    <select
+                      value={scheduleForm.type}
+                      onChange={(e) => setScheduleForm({ ...scheduleForm, type: e.target.value })}
+                      className="w-full mt-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-barnes-violet"
+                    >
+                      <option>Eerste Interview</option>
+                      <option>Tweede Interview</option>
+                      <option>Technische Test</option>
+                      <option>Vervolg Gesprek</option>
+                      <option>Nazorg Gesprek</option>
+                    </select>
+                  </div>
+                  
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-sm font-medium text-barnes-dark-gray">Datum</label>
+                      <input
+                        type="date"
+                        value={scheduleForm.date}
+                        onChange={(e) => setScheduleForm({ ...scheduleForm, date: e.target.value })}
+                        min={new Date().toISOString().split('T')[0]}
+                        className="w-full mt-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-barnes-violet"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-sm font-medium text-barnes-dark-gray">Tijd</label>
+                      <select
+                        value={scheduleForm.time}
+                        onChange={(e) => setScheduleForm({ ...scheduleForm, time: e.target.value })}
+                        className="w-full mt-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-barnes-violet"
+                      >
+                        <option value="">Selecteer tijd</option>
+                        {generateTimeSlots().map(slot => (
+                          <option key={slot} value={slot}>{slot}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                  
+                  <div>
+                    <label className="text-sm font-medium text-barnes-dark-gray">Locatie/Platform</label>
+                    <select
+                      value={scheduleForm.location}
+                      onChange={(e) => setScheduleForm({ ...scheduleForm, location: e.target.value })}
+                      className="w-full mt-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-barnes-violet"
+                    >
+                      <option>Teams/Zoom</option>
+                      <option>Live op kantoor</option>
+                      <option>Telefonisch</option>
+                      <option>E-mail</option>
+                      <option>Anders</option>
+                    </select>
+                  </div>
+                  
+                  <div>
+                    <label className="text-sm font-medium text-barnes-dark-gray">Notities (optioneel)</label>
+                    <textarea
+                      rows={3}
+                      value={scheduleForm.notes}
+                      onChange={(e) => setScheduleForm({ ...scheduleForm, notes: e.target.value })}
+                      placeholder="Extra informatie over de geplande afspraak..."
+                      className="w-full mt-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-barnes-violet"
+                    />
+                  </div>
+                  
+                  {scheduleForm.date && scheduleForm.time && (
+                    <div className="p-3 bg-barnes-light-gray rounded-lg">
+                      <p className="text-sm font-medium text-barnes-dark-violet">Geplande afspraak:</p>
+                      <p className="text-sm text-barnes-dark-gray mt-1">
+                        {new Date(`${scheduleForm.date}T${scheduleForm.time}`).toLocaleString('nl-NL', {
+                          weekday: 'long',
+                          year: 'numeric',
+                          month: 'long',
+                          day: 'numeric',
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        })}
+                      </p>
+                      <p className="text-xs text-barnes-dark-gray mt-1">
+                        {scheduleForm.type} • {scheduleForm.location}
+                      </p>
+                    </div>
+                  )}
+                </div>
+                
+                <div className="flex justify-end gap-3 pt-4 border-t border-gray-200">
+                  <button 
+                    className="btn-secondary" 
+                    onClick={() => {
+                      setShowScheduleModal(false);
+                      setScheduledConversationId(null);
+                    }}
+                  >
+                    Overslaan
+                  </button>
+                  <button
+                    className="btn-primary"
+                    onClick={handleSaveSchedule}
+                    disabled={isSavingSchedule || !scheduleForm.date || !scheduleForm.time}
+                  >
+                    {isSavingSchedule ? 'Plannen...' : 'Plan afspraak'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Conversation Modal */}
           {conversationModal.open && conversationModal.candidate && (
             <div
@@ -782,6 +1454,115 @@ export default function JobDetailPage() {
           )}
         </div>
       </div>
+
+      {/* Offer Candidate Modal */}
+      {showOfferCandidateModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col">
+            <div className="p-6 border-b border-gray-200">
+              <div className="flex items-center justify-between">
+                <h2 className="text-2xl font-bold text-barnes-dark-violet">
+                  Kandidaat Aanbieden voor Vacature
+                </h2>
+                <button
+                  onClick={() => {
+                    setShowOfferCandidateModal(false);
+                    setSelectedCandidatesToOffer([]);
+                  }}
+                  className="text-gray-400 hover:text-gray-600"
+                >
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+              <p className="text-sm text-barnes-dark-gray mt-2">
+                Selecteer kandidaten uit je database om aan te bieden voor deze vacature
+              </p>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-6">
+              {isLoadingAvailableCandidates ? (
+                <div className="text-center py-12">
+                  <p className="text-barnes-dark-gray">Laden...</p>
+                </div>
+              ) : availableCandidates.length === 0 ? (
+                <div className="text-center py-12">
+                  <p className="text-barnes-dark-gray mb-4">Geen beschikbare kandidaten</p>
+                  <p className="text-sm text-gray-500">
+                    Alle kandidaten zijn al toegewezen aan deze vacature, of er zijn nog geen kandidaten in de database.
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {availableCandidates.map((candidate) => (
+                    <label
+                      key={candidate.id}
+                      className={`flex items-center gap-4 p-4 border-2 rounded-lg cursor-pointer transition-colors ${
+                        selectedCandidatesToOffer.includes(candidate.id)
+                          ? 'border-barnes-violet bg-barnes-violet/5'
+                          : 'border-gray-200 hover:border-gray-300'
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedCandidatesToOffer.includes(candidate.id)}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setSelectedCandidatesToOffer([...selectedCandidatesToOffer, candidate.id]);
+                          } else {
+                            setSelectedCandidatesToOffer(selectedCandidatesToOffer.filter(id => id !== candidate.id));
+                          }
+                        }}
+                        className="w-5 h-5 text-barnes-violet rounded border-gray-300 focus:ring-barnes-violet"
+                      />
+                      <div className="flex-1">
+                        <p className="font-semibold text-barnes-dark-violet">{candidate.name}</p>
+                        <p className="text-sm text-barnes-dark-gray">{candidate.email || '—'}</p>
+                        {candidate.job_id && (
+                          <p className="text-xs text-gray-500 mt-1">
+                            Al toegewezen aan een andere vacature
+                          </p>
+                        )}
+                      </div>
+                      <button
+                        onClick={() => router.push(`/company/kandidaten/${candidate.id}`)}
+                        className="text-sm text-barnes-violet hover:underline"
+                      >
+                        Details →
+                      </button>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="p-6 border-t border-gray-200 flex items-center justify-between">
+              <p className="text-sm text-barnes-dark-gray">
+                {selectedCandidatesToOffer.length} kandidaat(en) geselecteerd
+              </p>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => {
+                    setShowOfferCandidateModal(false);
+                    setSelectedCandidatesToOffer([]);
+                  }}
+                  className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors"
+                >
+                  Annuleren
+                </button>
+                <button
+                  onClick={handleOfferCandidates}
+                  disabled={selectedCandidatesToOffer.length === 0 || isOfferingCandidates}
+                  className="px-4 py-2 bg-barnes-violet text-white rounded-lg hover:bg-barnes-dark-violet transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {isOfferingCandidates ? 'Aanbieden...' : `${selectedCandidatesToOffer.length} Kandidaat(en) Aanbieden`}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

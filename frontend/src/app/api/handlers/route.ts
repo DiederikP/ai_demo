@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+const BACKEND_URL = process.env.BACKEND_URL || process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+
 export async function GET() {
   try {
-    const response = await fetch('http://localhost:8000/evaluation-handlers');
+    const response = await fetch(`${BACKEND_URL}/evaluation-handlers`);
     
     if (!response.ok) {
       return NextResponse.json(
@@ -27,7 +29,7 @@ export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData();
     
-    const backendResponse = await fetch('http://localhost:8000/evaluation-handlers', {
+    const backendResponse = await fetch(`${BACKEND_URL}/evaluation-handlers`, {
       method: 'POST',
       body: formData,
     });

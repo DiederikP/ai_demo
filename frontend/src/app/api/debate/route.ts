@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+const BACKEND_URL = process.env.BACKEND_URL || process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+
 export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData();
@@ -41,7 +43,7 @@ export async function POST(request: NextRequest) {
       uploadFormData.append('motivation_file', motivationFile);
     }
 
-    const uploadResponse = await fetch('http://localhost:8000/upload-resume', {
+    const uploadResponse = await fetch(`${BACKEND_URL}/upload-resume`, {
       method: 'POST',
       body: uploadFormData,
     });
@@ -79,7 +81,7 @@ export async function POST(request: NextRequest) {
     
     console.log('Frontend API - Sending debate request with:', Object.fromEntries(debateFormData.entries()));
 
-    const debateResponse = await fetch('http://localhost:8000/debate-candidate', {
+    const debateResponse = await fetch(`${BACKEND_URL}/debate-candidate`, {
       method: 'POST',
       body: debateFormData,
     });

@@ -1,12 +1,16 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Query
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Query, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from pydantic import BaseModel, EmailStr
 from typing import List, Optional, Dict
 from uuid import uuid4
 import openai
 import os
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta
+from passlib.context import CryptContext
+from jose import JWTError, jwt
 try:
     from azure.ai.formrecognizer import DocumentAnalysisClient
     from azure.core.credentials import AzureKeyCredential
@@ -18,6 +22,7 @@ except ImportError:
     print("Warning: Azure Document Intelligence not available. PDF parsing will be limited.")
 import io
 import re
+import json
 from io import BytesIO
 from docx import Document
 from dotenv import load_dotenv
@@ -412,6 +417,10 @@ class JobPostingDB(Base):
     ai_analysis = Column(Text, nullable=True)  # Store AI analysis results
     created_at = Column(DateTime(timezone=True), nullable=True)  # Made nullable for SQLite compatibility
     timeline_stage = Column(String, nullable=True)  # Manual timeline stage override: 'waiting', 'inProgress', 'afterFirst', 'multiRound', 'completed'
+    is_active = Column(Boolean, default=True)  # Active/Inactive grouping
+    weighted_requirements = Column(Text, nullable=True)  # JSON string of dict { "skill": weight }
+    assigned_agency_id = Column(String, ForeignKey("users.id"), nullable=True)  # For recruiter portal
+    company_id = Column(String, ForeignKey("companies.id"), nullable=True)  # Portal/company isolation
     candidates = relationship("CandidateDB", back_populates="job")
 
 class CandidateDB(Base):
@@ -428,6 +437,26 @@ class CandidateDB(Base):
     preferential_job_ids = Column(Text)  # Comma-separated list of job IDs for preferential vacatures
     company_note = Column(Text)  # Note from the supplying company about the candidate
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    # Extended candidate fields (structured data)
+    motivation_reason = Column(Text)  # Motivation for role / reason for leaving current job
+    test_results = Column(Text)  # Test results or skill scores (JSON format)
+    age = Column(Integer)  # Candidate age
+    years_experience = Column(Integer)  # Years of experience (duplicate of experience_years for clarity)
+    skill_tags = Column(Text)  # JSON array of skill tags
+    prior_job_titles = Column(Text)  # JSON array of prior job titles
+    certifications = Column(Text)  # JSON array of certifications
+    education_level = Column(String)  # e.g., "Bachelor", "Master", "PhD"
+    location = Column(String)  # Candidate location
+    communication_level = Column(String)  # e.g., "Native", "Fluent", "Intermediate"
+    availability_per_week = Column(Integer)  # Hours per week available
+    notice_period = Column(String)  # e.g., "2 weeks", "1 month"
+    salary_expectation = Column(Integer)  # EUR per 40h week
+    source = Column(String)  # How candidate was sourced (e.g., "LinkedIn", "Agency XYZ", "Direct")
+    submitted_by_company_id = Column(String, ForeignKey("companies.id"), nullable=True)  # Which agency/company submitted this candidate
+    pipeline_stage = Column(String)  # Pipeline stage: "introduced", "review", "first_interview", "second_interview", "offer", "complete"
+    pipeline_status = Column(String)  # Pipeline status: "active", "on_hold", "rejected", "accepted"
+    
     job = relationship("JobPostingDB", back_populates="candidates")
     evaluations = relationship("EvaluationDB", back_populates="candidate")
 
@@ -473,12 +502,16 @@ class EvaluationResultDB(Base):
 class PersonaDB(Base):
     __tablename__ = "personas"
     id = Column(String, primary_key=True, default=lambda: str(uuid4()))
-    name = Column(String, nullable=False, unique=True)
+    name = Column(String, nullable=False)
     display_name = Column(String, nullable=False)
     system_prompt = Column(Text, nullable=False)
+    personal_criteria = Column(Text, nullable=True)  # JSON string with custom evaluation criteria (user-defined, set once)
+    company_id = Column(String, ForeignKey("companies.id"), nullable=True)  # Portal/company isolation
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    # Unique constraint: same name cannot exist twice in the same portal/company
+    __table_args__ = (UniqueConstraint('name', 'company_id', name='uq_persona_name_company'),)
 
 class EvaluationTemplateDB(Base):
     __tablename__ = "evaluation_templates"
@@ -520,6 +553,7 @@ class UserDB(Base):
     id = Column(String, primary_key=True, default=lambda: str(uuid4()))
     email = Column(String, unique=True, nullable=False)
     name = Column(String, nullable=False)
+    password_hash = Column(String, nullable=True)  # Hashed password for authentication
     role = Column(String, default="user")  # admin, recruiter, viewer
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -691,14 +725,53 @@ def seed_sample_company_users():
             db.refresh(company)
         
         sample_users = [
-            ("vaatje@zuljehemhebben.nl", "Vaatje"),
-            ("diederik@zuljehemhebben.nl", "Diederik")
+            ("vaatje@zuljehemhebben.nl", "Vaatje", "123", "admin"),
+            ("diederik@zuljehemhebben.nl", "Diederik", None, "admin")
         ]
         created = False
-        for email, name in sample_users:
+        for email, name, password, role in sample_users:
             existing = db.query(UserDB).filter(UserDB.email == email).first()
-            if not existing:
-                user = UserDB(email=email, name=name, role="admin", company_id=company.id)
+            if existing:
+                # Update existing user with password if provided
+                try:
+                    if password and not existing.password_hash:
+                        existing.password_hash = get_password_hash(password)
+                        existing.name = name
+                        existing.role = role
+                        existing.is_active = True
+                        created = True
+                    elif password and existing.password_hash:
+                        # Update password if provided
+                        existing.password_hash = get_password_hash(password)
+                        existing.name = name
+                        existing.role = role
+                        existing.is_active = True
+                        created = True
+                except Exception as hash_error:
+                    print(f"Warning: Could not hash password for {email}: {str(hash_error)}")
+                    # Continue without password - user can set it via API later
+                    existing.name = name
+                    existing.role = role
+                    existing.is_active = True
+                    created = True
+            else:
+                # Create new user
+                password_hash = None
+                try:
+                    if password:
+                        password_hash = get_password_hash(password)
+                except Exception as hash_error:
+                    print(f"Warning: Could not hash password for {email}: {str(hash_error)}")
+                    # Continue without password - user can set it via API later
+                
+                user = UserDB(
+                    email=email,
+                    name=name,
+                    role=role,
+                    company_id=company.id,
+                    password_hash=password_hash,
+                    is_active=True
+                )
                 db.add(user)
                 created = True
         if created:
@@ -708,10 +781,141 @@ def seed_sample_company_users():
 
 # Ensure schema upgrades for company support
 ensure_column_exists("users", "company_id", "TEXT")
+ensure_column_exists("users", "password_hash", "TEXT")
 ensure_column_exists("evaluations", "job_id", "TEXT")
 default_company_id = ensure_default_company()
 assign_users_without_company(default_company_id)
-seed_sample_company_users()
+# seed_sample_company_users() will be called after get_password_hash is defined (see below)
+
+# -----------------------------
+# Authentication setup
+# -----------------------------
+# Password hashing
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+# JWT configuration
+SECRET_KEY = os.getenv("JWT_SECRET_KEY", "your-secret-key-change-in-production")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 7 days
+
+# Security scheme
+security = HTTPBearer()
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Verify a password against a hash"""
+    return pwd_context.verify(plain_password, hashed_password)
+
+def get_password_hash(password: str) -> str:
+    """Hash a password"""
+    return pwd_context.hash(password)
+
+# Now that password hashing is available, seed sample users
+# Wrap in try-catch to prevent startup failure if there are issues
+try:
+    seed_sample_company_users()
+except Exception as e:
+    print(f"Warning: Could not seed sample users during startup: {str(e)}")
+    print("This is not critical - users can still be created manually or via the API.")
+    import traceback
+    traceback.print_exc()
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
+    """Create a JWT access token"""
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> UserDB:
+    """Get the current authenticated user from JWT token"""
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        token = credentials.credentials
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id: str = payload.get("sub")
+        if user_id is None:
+            raise credentials_exception
+    except JWTError:
+        raise credentials_exception
+    
+    db = SessionLocal()
+    try:
+        user = db.query(UserDB).filter(UserDB.id == user_id, UserDB.is_active == True).first()
+        if user is None:
+            raise credentials_exception
+        return user
+    finally:
+        db.close()
+
+# Permission checking functions
+def require_role(allowed_roles: List[str]):
+    """Dependency to check if user has one of the required roles"""
+    async def role_checker(current_user: UserDB = Depends(get_current_user)) -> UserDB:
+        if current_user.role not in allowed_roles:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Access denied. Required roles: {', '.join(allowed_roles)}"
+            )
+        return current_user
+    return role_checker
+
+def require_admin():
+    """Dependency to check if user is admin"""
+    return require_role(["admin"])
+
+def require_recruiter_or_admin():
+    """Dependency to check if user is recruiter or admin"""
+    # Return the dependency function directly
+    return require_role(["admin", "recruiter"])
+
+def check_permission(user: UserDB, resource: str, action: str = "read") -> bool:
+    """Check if user has permission for a resource and action"""
+    role = user.role.lower() if user.role else "user"
+    
+    # Admin has full access
+    if role == "admin":
+        return True
+    
+    # Define permissions by role
+    permissions = {
+        "recruiter": {
+            "candidates": ["read", "create", "update", "delete"],
+            "jobs": ["read", "create", "update", "delete"],
+            "evaluations": ["read", "create"],
+            "debates": ["read", "create"],
+            "results": ["read"],
+            "personas": ["read"],
+        },
+        "viewer": {
+            "candidates": ["read"],
+            "jobs": ["read"],
+            "evaluations": ["read"],
+            "debates": ["read"],
+            "results": ["read"],
+            "personas": ["read"],
+        },
+        "user": {
+            "candidates": ["read"],
+            "jobs": ["read"],
+            "evaluations": ["read"],
+            "debates": ["read"],
+            "results": ["read"],
+            "personas": ["read"],
+        },
+    }
+    
+    role_perms = permissions.get(role, permissions["user"])
+    resource_perms = role_perms.get(resource, [])
+    
+    return action in resource_perms or "*" in resource_perms
 
 def serialize_company(company: Optional[CompanyDB]):
     if not company:
@@ -1043,17 +1247,190 @@ async def health_check():
     return {"status": "healthy", "service": "Barnes AI Hiring Assistant"}
 
 # -----------------------------
+# Authentication endpoints
+# -----------------------------
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+class RegisterRequest(BaseModel):
+    email: EmailStr
+    password: str
+    name: str
+    company_id: Optional[str] = None
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str
+    user: dict
+
+@app.post("/auth/login", response_model=TokenResponse)
+async def login(login_data: LoginRequest):
+    """Authenticate user and return JWT token"""
+    db = SessionLocal()
+    try:
+        user = db.query(UserDB).filter(UserDB.email == login_data.email.lower()).first()
+        
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid email or password"
+            )
+        
+        if not user.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User account is inactive"
+            )
+        
+        # Check if user has a password hash (new users might not have one yet)
+        if not user.password_hash:
+            # For backward compatibility, allow login without password if no hash exists
+            # In production, this should require password reset
+            if login_data.password == "demo":  # Temporary demo password
+                # Generate hash for future use
+                user.password_hash = get_password_hash(login_data.password)
+                db.commit()
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid email or password"
+                )
+        else:
+            # Verify password
+            try:
+                if not verify_password(login_data.password, user.password_hash):
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="Invalid email or password"
+                    )
+            except Exception as verify_error:
+                print(f"Error verifying password for {login_data.email}: {str(verify_error)}")
+                import traceback
+                traceback.print_exc()
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Error verifying password: {str(verify_error)}"
+                )
+        
+        # Create access token
+        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token = create_access_token(
+            data={"sub": user.id, "email": user.email, "role": user.role},
+            expires_delta=access_token_expires
+        )
+        
+        return TokenResponse(
+            access_token=access_token,
+            token_type="bearer",
+            user={
+                "id": user.id,
+                "email": user.email,
+                "name": user.name,
+                "role": user.role,
+                "company_id": user.company_id
+            }
+        )
+    finally:
+        db.close()
+
+@app.post("/auth/register", response_model=TokenResponse)
+async def register(register_data: RegisterRequest):
+    """Register a new user"""
+    db = SessionLocal()
+    try:
+        # Check if user already exists
+        existing_user = db.query(UserDB).filter(UserDB.email == register_data.email.lower()).first()
+        if existing_user:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email already registered"
+            )
+        
+        # Create new user
+        password_hash = get_password_hash(register_data.password)
+        new_user = UserDB(
+            email=register_data.email.lower(),
+            name=register_data.name,
+            password_hash=password_hash,
+            role="user",  # Default role
+            company_id=register_data.company_id,
+            is_active=True
+        )
+        
+        db.add(new_user)
+        db.commit()
+        db.refresh(new_user)
+        
+        # Create access token
+        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token = create_access_token(
+            data={"sub": new_user.id, "email": new_user.email, "role": new_user.role},
+            expires_delta=access_token_expires
+        )
+        
+        return TokenResponse(
+            access_token=access_token,
+            token_type="bearer",
+            user={
+                "id": new_user.id,
+                "email": new_user.email,
+                "name": new_user.name,
+                "role": new_user.role,
+                "company_id": new_user.company_id
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to register user: {str(e)}"
+        )
+    finally:
+        db.close()
+
+@app.get("/auth/me")
+async def get_current_user_info(current_user: UserDB = Depends(get_current_user)):
+    """Get current authenticated user information"""
+    return {
+        "id": current_user.id,
+        "email": current_user.email,
+        "name": current_user.name,
+        "role": current_user.role,
+        "company_id": current_user.company_id,
+        "is_active": current_user.is_active
+    }
+
+# -----------------------------
 # Persona CRUD endpoints
 # -----------------------------
 
 @app.get("/personas")
-async def get_personas():
-    """Get all active personas"""
+async def get_personas(company_id: Optional[str] = None):
+    """Get all active personas, optionally filtered by company/portal"""
     try:
         db = SessionLocal()
-        personas = db.query(PersonaDB).filter(PersonaDB.is_active == True).all()
+        query = db.query(PersonaDB).filter(PersonaDB.is_active == True)
+        
+        # Filter by company_id if provided (portal isolation)
+        if company_id:
+            query = query.filter(
+                or_(
+                    PersonaDB.company_id == company_id,
+                    PersonaDB.company_id.is_(None)  # Include global personas
+                )
+            )
+        else:
+            # If no company_id, only return global personas (backward compatibility)
+            query = query.filter(PersonaDB.company_id.is_(None))
+        
+        personas = query.all()
         db.close()
         
+        import json
         return {
             "success": True,
             "personas": [
@@ -1062,6 +1439,8 @@ async def get_personas():
                     "name": persona.name,
                     "display_name": persona.display_name,
                     "system_prompt": persona.system_prompt,
+                    "personal_criteria": json.loads(persona.personal_criteria) if hasattr(persona, 'personal_criteria') and persona.personal_criteria else None,
+                    "company_id": persona.company_id,
                     "is_active": persona.is_active,
                     "created_at": persona.created_at.isoformat() if persona.created_at else None
                 }
@@ -1090,12 +1469,14 @@ async def create_persona(
             name = data.get("name", "")
             display_name = data.get("display_name", "")
             system_prompt = data.get("system_prompt", "")
+            personal_criteria = data.get("personal_criteria", None)  # Optional JSON string or dict
         else:
             # Handle Form data
             form_data = await request.form()
             name = form_data.get("name", "")
             display_name = form_data.get("display_name", "")
             system_prompt = form_data.get("system_prompt", "")
+            personal_criteria = form_data.get("personal_criteria", None)
         
         # Convert list values to strings if needed
         if isinstance(name, list):
@@ -1104,22 +1485,65 @@ async def create_persona(
             display_name = display_name[0] if display_name else ""
         if isinstance(system_prompt, list):
             system_prompt = system_prompt[0] if system_prompt else ""
+        if isinstance(personal_criteria, list):
+            personal_criteria = personal_criteria[0] if personal_criteria else None
+        
+        # Process personal_criteria - convert to JSON string if needed
+        import json
+        personal_criteria_str = None
+        if personal_criteria:
+            if isinstance(personal_criteria, str):
+                # Try to validate JSON if it's a string
+                try:
+                    json.loads(personal_criteria)  # Validate JSON
+                    personal_criteria_str = personal_criteria
+                except:
+                    # If not valid JSON, treat as plain text and convert to JSON
+                    personal_criteria_str = json.dumps([personal_criteria])
+            elif isinstance(personal_criteria, (list, dict)):
+                # Convert dict/list to JSON string
+                personal_criteria_str = json.dumps(personal_criteria)
         
         # Validate required fields
         if not name or not display_name or not system_prompt:
             db.close()
             raise HTTPException(status_code=400, detail="Name, display_name, and system_prompt are required")
         
-        # Check if persona with this name already exists
-        existing = db.query(PersonaDB).filter(PersonaDB.name == name).first()
+        # Get company_id from request (for portal isolation)
+        company_id = None
+        if "application/json" in content_type:
+            company_id = data.get("company_id", None)
+        else:
+            company_id_form = form_data.get("company_id", None)
+            if isinstance(company_id_form, list):
+                company_id = company_id_form[0] if company_id_form else None
+            else:
+                company_id = company_id_form
+        
+        # Check if persona with this name already exists in the same portal/company
+        # Prevent duplicate specialists in the same portal
+        query = db.query(PersonaDB).filter(PersonaDB.name == name)
+        if company_id:
+            query = query.filter(PersonaDB.company_id == company_id)
+        else:
+            # If no company_id, check for global personas (company_id is NULL)
+            query = query.filter(PersonaDB.company_id.is_(None))
+        
+        existing = query.first()
         if existing:
             db.close()
-            raise HTTPException(status_code=400, detail=f"Persona with name '{name}' already exists")
+            portal_msg = f"in this portal" if company_id else "globally"
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Persona with name '{name}' already exists {portal_msg}. Each portal can only have one specialist with the same name."
+            )
         
         persona = PersonaDB(
             name=name,
             display_name=display_name,
-            system_prompt=system_prompt
+            system_prompt=system_prompt,
+            personal_criteria=personal_criteria_str,
+            company_id=company_id  # Associate with portal/company for isolation
         )
         
         db.add(persona)
@@ -1167,6 +1591,7 @@ async def update_persona(
             name = data.get("name")
             display_name = data.get("display_name")
             system_prompt = data.get("system_prompt")
+            personal_criteria = data.get("personal_criteria", None)  # Optional
             is_active = data.get("is_active")
         else:
             # Handle Form data
@@ -1174,6 +1599,7 @@ async def update_persona(
             name = form_data.get("name")
             display_name = form_data.get("display_name")
             system_prompt = form_data.get("system_prompt")
+            personal_criteria = form_data.get("personal_criteria", None)
             is_active = form_data.get("is_active")
             # Convert is_active from string to bool if present
             if is_active is not None:
@@ -1186,15 +1612,64 @@ async def update_persona(
             display_name = display_name[0] if display_name else None
         if isinstance(system_prompt, list):
             system_prompt = system_prompt[0] if system_prompt else None
+        if isinstance(personal_criteria, list):
+            personal_criteria = personal_criteria[0] if personal_criteria else None
+        
+        # Process personal_criteria - convert to JSON string if needed
+        import json
+        if personal_criteria is not None:
+            if isinstance(personal_criteria, str):
+                # Try to validate JSON if it's a string
+                try:
+                    json.loads(personal_criteria)  # Validate JSON
+                    persona.personal_criteria = personal_criteria
+                except:
+                    # If not valid JSON, treat as plain text and convert to JSON
+                    persona.personal_criteria = json.dumps([personal_criteria])
+            elif isinstance(personal_criteria, (list, dict)):
+                # Convert dict/list to JSON string
+                persona.personal_criteria = json.dumps(personal_criteria)
+            elif personal_criteria == "":
+                # Clear personal_criteria
+                persona.personal_criteria = None
+        
+        # Get company_id (use existing if not provided in update)
+        current_company_id = persona.company_id
+        if "application/json" in content_type:
+            update_company_id = data.get("company_id", current_company_id)
+        else:
+            company_id_form = form_data.get("company_id", None)
+            if company_id_form:
+                update_company_id = company_id_form[0] if isinstance(company_id_form, list) else company_id_form
+            else:
+                update_company_id = current_company_id
         
         # Update only provided fields
         if name is not None:
-            # Check if new name conflicts with existing persona
-            existing = db.query(PersonaDB).filter(PersonaDB.name == name, PersonaDB.id != persona_id).first()
+            # Check if new name conflicts with existing persona in the same portal
+            # Prevent duplicate specialists in the same portal (excluding current persona)
+            query = db.query(PersonaDB).filter(
+                PersonaDB.name == name,
+                PersonaDB.id != persona_id
+            )
+            if update_company_id:
+                query = query.filter(PersonaDB.company_id == update_company_id)
+            else:
+                query = query.filter(PersonaDB.company_id.is_(None))
+            
+            existing = query.first()
             if existing:
                 db.close()
-                raise HTTPException(status_code=400, detail=f"Persona with name '{name}' already exists")
+                portal_msg = f"in this portal" if update_company_id else "globally"
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Persona with name '{name}' already exists {portal_msg}. Each portal can only have one specialist with the same name."
+                )
             persona.name = name
+        
+        # Update company_id if provided
+        if update_company_id != current_company_id:
+            persona.company_id = update_company_id
         if display_name is not None:
             persona.display_name = display_name
         if system_prompt is not None:
@@ -1430,6 +1905,7 @@ async def upload_job_description(
             location = data.get("location", "Not specified")
             salary_range = data.get("salary_range", "Not specified")
             watcher_user_ids = data.get("watcher_user_ids", [])
+            weighted_requirements = data.get("weighted_requirements", None)  # JSON string or dict
         else:
             # Handle Form data (for file uploads)
             form_data = await request.form()
@@ -1470,6 +1946,21 @@ async def upload_job_description(
             db.close()
             raise HTTPException(status_code=400, detail="Title, company, and description are required")
         
+        # Process weighted_requirements - convert to JSON string if needed
+        import json
+        weighted_requirements_str = None
+        if weighted_requirements:
+            if isinstance(weighted_requirements, str):
+                # Already a JSON string, validate it
+                try:
+                    json.loads(weighted_requirements)  # Validate JSON
+                    weighted_requirements_str = weighted_requirements
+                except:
+                    weighted_requirements_str = None  # Invalid JSON, ignore
+            elif isinstance(weighted_requirements, dict):
+                # Convert dict to JSON string
+                weighted_requirements_str = json.dumps(weighted_requirements)
+        
         # Create job posting with optional fields
         from datetime import datetime
         job_posting = JobPostingDB(
@@ -1479,7 +1970,8 @@ async def upload_job_description(
             requirements=requirements or "Not specified",
             location=location or "Not specified",
             salary_range=salary_range or "Not specified",
-            created_at=datetime.now()  # Set created_at explicitly for SQLite compatibility
+            created_at=datetime.now(),  # Set created_at explicitly for SQLite compatibility
+            weighted_requirements=weighted_requirements_str
         )
         
         db.add(job_posting)
@@ -1539,12 +2031,40 @@ async def upload_job_description(
         raise HTTPException(status_code=500, detail=f"Failed to upload job description: {str(e)}")
 
 @app.get("/job-descriptions")
-async def get_job_descriptions():
-    """Get all job descriptions"""
+async def get_job_descriptions(
+    company_id: Optional[str] = None,
+    recruiter_id: Optional[str] = None,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
+):
+    """Get all job descriptions, optionally filtered by company_id or recruiter_id"""
     try:
         import json
         db = SessionLocal()
-        jobs = db.query(JobPostingDB).all()
+        query = db.query(JobPostingDB)
+        
+        # Try to get current user (optional - allow unauthenticated requests)
+        current_user = None
+        if credentials:
+            try:
+                current_user = await get_current_user(credentials)
+            except:
+                pass  # Not authenticated, continue without user filtering
+        
+        # Filter by recruiter_id if provided (recruiter portal)
+        if recruiter_id:
+            query = query.filter(JobPostingDB.assigned_agency_id == recruiter_id)
+        elif current_user and current_user.role == "recruiter":
+            # If user is a recruiter, only show assigned vacancies
+            query = query.filter(JobPostingDB.assigned_agency_id == current_user.id)
+        
+        # Filter by company_id if provided (multi-portal isolation)
+        if company_id:
+            query = query.filter(JobPostingDB.company_id == company_id)
+        elif current_user and current_user.company_id:
+            # If user is authenticated and has company_id, filter by user's company
+            query = query.filter(JobPostingDB.company_id == current_user.company_id)
+        
+        jobs = query.all()
         db.close()
         
         return {
@@ -1560,7 +2080,10 @@ async def get_job_descriptions():
                     "salary_range": job.salary_range,
                     "ai_analysis": json.loads(job.ai_analysis) if job.ai_analysis else None,
                     "created_at": job.created_at.isoformat() if job.created_at else "Recently uploaded",
-                    "timeline_stage": job.timeline_stage
+                    "timeline_stage": job.timeline_stage,
+                    "is_active": job.is_active if hasattr(job, 'is_active') else True,  # Default to active if not set
+                    "weighted_requirements": job.weighted_requirements if hasattr(job, 'weighted_requirements') else None,
+                    "assigned_agency_id": job.assigned_agency_id if hasattr(job, 'assigned_agency_id') else None
                 }
                 for job in jobs
             ]
@@ -1742,15 +2265,17 @@ Extraheer alle beschikbare informatie en vul het JSON object in."""
 @app.put("/job-descriptions/{job_id}")
 async def update_job_description(
     job_id: str,
+    request: Request,
     title: Optional[str] = Form(None),
     company: Optional[str] = Form(None),
     description: Optional[str] = Form(None),
     requirements: Optional[str] = Form(None),
     location: Optional[str] = Form(None),
     salary_range: Optional[str] = Form(None),
-    timeline_stage: Optional[str] = Form(None)
+    timeline_stage: Optional[str] = Form(None),
+    is_active: Optional[str] = Form(None)
 ):
-    """Update a job description"""
+    """Update a job description - supports both Form data and JSON"""
     try:
         db = SessionLocal()
         
@@ -1759,27 +2284,76 @@ async def update_job_description(
             db.close()
             raise HTTPException(status_code=404, detail="Job posting not found")
         
+        # Check if request is JSON
+        content_type = request.headers.get("content-type", "")
+        data = {}
+        
+        if "application/json" in content_type:
+            # Parse JSON body
+            try:
+                data = await request.json()
+            except:
+                pass
+        else:
+            # Use Form data (already parsed by FastAPI)
+            form_data = await request.form()
+            data = {
+                "title": title,
+                "company": company,
+                "description": description,
+                "requirements": requirements,
+                "location": location,
+                "salary_range": salary_range,
+                "timeline_stage": timeline_stage,
+                "is_active": is_active,
+                "weighted_requirements": form_data.get("weighted_requirements", None)
+            }
+        
         # Update only provided fields
-        if title is not None:
-            job.title = title
-        if company is not None:
-            job.company = company
-        if description is not None:
-            job.description = description
-        if requirements is not None:
-            job.requirements = requirements
-        if location is not None:
-            job.location = location
-        if salary_range is not None:
-            job.salary_range = salary_range
-        if timeline_stage is not None:
+        if "title" in data and data["title"] is not None:
+            job.title = data["title"]
+        if "company" in data and data["company"] is not None:
+            job.company = data["company"]
+        if "description" in data and data["description"] is not None:
+            job.description = data["description"]
+        if "requirements" in data and data["requirements"] is not None:
+            job.requirements = data["requirements"]
+        if "location" in data and data["location"] is not None:
+            job.location = data["location"]
+        if "salary_range" in data and data["salary_range"] is not None:
+            job.salary_range = data["salary_range"]
+        if "timeline_stage" in data and data["timeline_stage"] is not None:
             # Validate timeline_stage value
             valid_stages = ['waiting', 'inProgress', 'afterFirst', 'multiRound', 'completed']
-            if timeline_stage in valid_stages:
-                job.timeline_stage = timeline_stage
+            if data["timeline_stage"] in valid_stages:
+                job.timeline_stage = data["timeline_stage"]
             else:
                 db.close()
                 raise HTTPException(status_code=400, detail=f"Invalid timeline_stage. Must be one of: {', '.join(valid_stages)}")
+        if "is_active" in data and data["is_active"] is not None:
+            # Convert string to bool if needed (Form data always strings)
+            if isinstance(data["is_active"], str):
+                job.is_active = data["is_active"].lower() in ('true', '1', 'yes', 'on')
+            else:
+                job.is_active = bool(data["is_active"])
+        
+        if "weighted_requirements" in data and data["weighted_requirements"] is not None:
+            # Process weighted_requirements - convert to JSON string if needed
+            import json
+            weighted_requirements = data["weighted_requirements"]
+            if isinstance(weighted_requirements, str):
+                # Already a JSON string, validate it
+                try:
+                    json.loads(weighted_requirements)  # Validate JSON
+                    job.weighted_requirements = weighted_requirements
+                except:
+                    pass  # Invalid JSON, keep existing value
+            elif isinstance(weighted_requirements, dict):
+                # Convert dict to JSON string
+                job.weighted_requirements = json.dumps(weighted_requirements)
+            elif weighted_requirements == "" or weighted_requirements is None:
+                # Clear weighted requirements
+                job.weighted_requirements = None
         
         db.commit()
         db.refresh(job)
@@ -1795,7 +2369,9 @@ async def update_job_description(
                 "description": job.description,
                 "requirements": job.requirements,
                 "location": job.location,
-                "salary_range": job.salary_range
+                "salary_range": job.salary_range,
+                "is_active": job.is_active if hasattr(job, 'is_active') else True,
+                "timeline_stage": job.timeline_stage
             }
         }
         
@@ -1805,6 +2381,7 @@ async def update_job_description(
 
 @app.post("/upload-resume")
 async def upload_resume(
+    request: Request,
     file: UploadFile = File(...),
     name: Optional[str] = Form(None),
     email: Optional[str] = Form(None),
@@ -1817,10 +2394,51 @@ async def upload_resume(
     motivation_file: Optional[UploadFile] = File(None),
     company_note: Optional[str] = Form(None),
     company_note_file: Optional[UploadFile] = File(None),
-    candidate_id: Optional[str] = Form(None)
+    candidate_id: Optional[str] = Form(None),
+    # Extended candidate fields - Form() always returns strings
+    motivation_reason: Optional[str] = Form(None),
+    test_results: Optional[str] = Form(None),
+    age: Optional[str] = Form(None),  # Accept as string, convert to int
+    years_experience: Optional[str] = Form(None),  # Accept as string, convert to int
+    skill_tags: Optional[str] = Form(None),  # JSON array as string
+    prior_job_titles: Optional[str] = Form(None),  # JSON array as string
+    certifications: Optional[str] = Form(None),  # JSON array as string
+    education_level: Optional[str] = Form(None),
+    location: Optional[str] = Form(None),
+    communication_level: Optional[str] = Form(None),
+    availability_per_week: Optional[str] = Form(None),  # Accept as string, convert to int
+    notice_period: Optional[str] = Form(None),
+    salary_expectation: Optional[str] = Form(None),  # Accept as string, convert to int
+    source: Optional[str] = Form(None),
+    pipeline_stage: Optional[str] = Form(None),
+    pipeline_status: Optional[str] = Form(None),
+    submitted_by_company_id: Optional[str] = Form(None),  # Which agency/company is submitting this candidate
+    force_duplicate: Optional[str] = Form(None),  # 'true' to force create duplicate, 'overwrite' to replace existing
+    duplicate_candidate_id: Optional[str] = Form(None)  # ID of existing candidate to overwrite
 ):
     """Upload and process resume file"""
     try:
+        # Try to get authenticated user (optional - allows unauthenticated uploads for backward compatibility)
+        current_user = None
+        try:
+            auth_header = request.headers.get("authorization") or request.headers.get("Authorization")
+            if auth_header and auth_header.startswith("Bearer "):
+                token = auth_header.replace("Bearer ", "")
+                from jose import jwt
+                payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+                user_id = payload.get("sub")
+                if user_id:
+                    db = SessionLocal()
+                    current_user = db.query(UserDB).filter(UserDB.id == user_id, UserDB.is_active == True).first()
+                    db.close()
+        except:
+            # Authentication failed or not provided - continue without it
+            pass
+        
+        # If user is a recruiter and no submitted_by_company_id is provided, use their company_id
+        final_submitted_by_company_id = submitted_by_company_id
+        if current_user and current_user.role == "recruiter" and not final_submitted_by_company_id and current_user.company_id:
+            final_submitted_by_company_id = current_user.company_id
         # Read file content
         file_content = await file.read()
         
@@ -1905,13 +2523,81 @@ async def upload_resume(
                 db.close()
                 raise HTTPException(status_code=404, detail="Candidate not found for update")
         
+        # Parse extended fields - handle empty strings and convert types
+        skill_tags_json = skill_tags if skill_tags and skill_tags.strip() else None
+        prior_job_titles_json = prior_job_titles if prior_job_titles and prior_job_titles.strip() else None
+        certifications_json = certifications if certifications and certifications.strip() else None
+        
+        # Use years_experience if provided, otherwise fall back to experience_years
+        # Convert years_experience if it's a string
+        try:
+            years_experience_int = int(years_experience) if years_experience is not None and str(years_experience).strip() else None
+        except (ValueError, TypeError):
+            years_experience_int = None
+        final_years_experience = years_experience_int if years_experience_int is not None else experience_years
+        
+        # Convert age and other integers - handle empty strings
+        try:
+            age_int = int(age) if age is not None and str(age).strip() else None
+        except (ValueError, TypeError):
+            age_int = None
+        
+        try:
+            availability_per_week_int = int(availability_per_week) if availability_per_week is not None and str(availability_per_week).strip() else None
+        except (ValueError, TypeError):
+            availability_per_week_int = None
+        
+        try:
+            salary_expectation_int = int(salary_expectation) if salary_expectation is not None and str(salary_expectation).strip() else None
+        except (ValueError, TypeError):
+            salary_expectation_int = None
+        
+        # Convert strings - handle empty strings
+        education_level_str = education_level if education_level and education_level.strip() else None
+        location_str = location if location and location.strip() else None
+        communication_level_str = communication_level if communication_level and communication_level.strip() else None
+        notice_period_str = notice_period if notice_period and notice_period.strip() else None
+        source_str = source if source and source.strip() else None
+        pipeline_stage_str = pipeline_stage if pipeline_stage and pipeline_stage.strip() else None
+        pipeline_status_str = pipeline_status if pipeline_status and pipeline_status.strip() else None
+        motivation_reason_str = motivation_reason if motivation_reason and motivation_reason.strip() else None
+        test_results_str = test_results if test_results and test_results.strip() else None
+        
+        # Debug logging for extended fields
+        print(f"DEBUG: Extended fields received (raw):")
+        print(f"  age: {age} (type: {type(age)})")
+        print(f"  years_experience: {years_experience} (type: {type(years_experience)})")
+        print(f"  skill_tags: {skill_tags}")
+        print(f"  prior_job_titles: {prior_job_titles}")
+        print(f"  certifications: {certifications}")
+        print(f"  education_level: {education_level}")
+        print(f"  location: {location}")
+        print(f"  communication_level: {communication_level}")
+        print(f"  availability_per_week: {availability_per_week} (type: {type(availability_per_week)})")
+        print(f"  notice_period: {notice_period}")
+        print(f"  salary_expectation: {salary_expectation} (type: {type(salary_expectation)})")
+        print(f"  source: {source}")
+        print(f"  pipeline_stage: {pipeline_stage}")
+        print(f"  pipeline_status: {pipeline_status}")
+        print(f"  motivation_reason: {motivation_reason}")
+        print(f"  test_results: {test_results}")
+        print(f"\nDEBUG: Extended fields processed:")
+        print(f"  age_int: {age_int}")
+        print(f"  availability_per_week_int: {availability_per_week_int}")
+        print(f"  salary_expectation_int: {salary_expectation_int}")
+        print(f"  skill_tags_json: {skill_tags_json}")
+        print(f"  prior_job_titles_json: {prior_job_titles_json}")
+        print(f"  certifications_json: {certifications_json}")
+        
         if existing_candidate:
+            # Update existing candidate
             existing_candidate.name = name or existing_candidate.name
             existing_candidate.email = email or existing_candidate.email
             existing_candidate.resume_text = resume_text
             existing_candidate.motivational_letter = motivation_text or existing_candidate.motivational_letter
-            if experience_years is not None:
-                existing_candidate.experience_years = experience_years
+            if final_years_experience is not None:
+                existing_candidate.experience_years = final_years_experience
+                existing_candidate.years_experience = final_years_experience
             if skills_list:
                 existing_candidate.skills = "|".join(skills_list)
             if education:
@@ -1922,23 +2608,195 @@ async def upload_resume(
                 existing_candidate.preferential_job_ids = ",".join(preferential_job_ids)
             if company_note_text:
                 existing_candidate.company_note = company_note_text
+            
+            # Update extended fields - use processed values
+            existing_candidate.motivation_reason = motivation_reason_str
+            existing_candidate.test_results = test_results_str
+            existing_candidate.age = age_int
+            existing_candidate.skill_tags = skill_tags_json
+            existing_candidate.prior_job_titles = prior_job_titles_json
+            existing_candidate.certifications = certifications_json
+            existing_candidate.education_level = education_level_str
+            existing_candidate.location = location_str
+            existing_candidate.communication_level = communication_level_str
+            existing_candidate.availability_per_week = availability_per_week_int
+            existing_candidate.notice_period = notice_period_str
+            existing_candidate.salary_expectation = salary_expectation_int
+            existing_candidate.source = source_str
+            existing_candidate.pipeline_stage = pipeline_stage_str or 'introduced'
+            existing_candidate.pipeline_status = pipeline_status_str or 'active'
+            
             db.commit()
             db.refresh(existing_candidate)
             candidate_db = existing_candidate
         else:
+            # Create new candidate
             if not name:
                 db.close()
                 raise HTTPException(status_code=400, detail="Naam is verplicht bij het aanmaken van een nieuwe kandidaat.")
+            
+            # Check for duplicate candidate (prevent second agency from submitting same candidate)
+            # Check by email if provided, otherwise by name (less reliable but better than nothing)
+            duplicate_candidate = None
+            if email and email.strip():
+                # Check for existing candidate with same email (case-insensitive)
+                duplicate_candidate = db.query(CandidateDB).filter(
+                    func.lower(CandidateDB.email) == email.strip().lower()
+                ).first()
+            elif name:
+                # If no email, check by name (case-insensitive exact match)
+                duplicate_candidate = db.query(CandidateDB).filter(
+                    func.lower(CandidateDB.name) == name.strip().lower()
+                ).first()
+            
+            # If duplicate found and submitted by different company/agency, prevent submission
+            if duplicate_candidate:
+                existing_source = None
+                existing_source_name = "Unknown"
+                
+                # Check if duplicate was submitted by a different company
+                if hasattr(duplicate_candidate, 'submitted_by_company_id') and duplicate_candidate.submitted_by_company_id:
+                    existing_source = duplicate_candidate.submitted_by_company_id
+                    existing_company = db.query(CompanyDB).filter(CompanyDB.id == existing_source).first()
+                    existing_source_name = existing_company.name if existing_company else existing_source
+                elif duplicate_candidate.source:
+                    existing_source_name = duplicate_candidate.source
+                
+                # Block duplicate if:
+                # 1. Different company is trying to submit (both have company_id and they differ)
+                # 2. New submission has company_id but existing one doesn't (prevent agencies from claiming existing candidates)
+                # 3. New submission doesn't have company_id but existing one does (same agency protection)
+                should_block = False
+                
+                # Get existing source (company_id if available, otherwise source field)
+                existing_company_id = None
+                if hasattr(duplicate_candidate, 'submitted_by_company_id') and duplicate_candidate.submitted_by_company_id:
+                    existing_company_id = duplicate_candidate.submitted_by_company_id
+                
+                if final_submitted_by_company_id and existing_company_id:
+                    # Both have company_id - block if different
+                    should_block = final_submitted_by_company_id != existing_company_id
+                elif final_submitted_by_company_id and not existing_company_id:
+                    # New has company_id, existing doesn't - block to prevent agencies claiming existing candidates
+                    should_block = True
+                    existing_source_name = existing_source_name if existing_source_name != "Unknown" else "een andere partij"
+                elif not final_submitted_by_company_id and existing_company_id:
+                    # New doesn't have company_id, existing does - block to protect existing agency
+                    should_block = True
+                elif not final_submitted_by_company_id and not existing_company_id:
+                    # Neither has company_id - allow for backward compatibility (legacy candidates without company tracking)
+                    # But if source field is set and different, still warn/block
+                    if duplicate_candidate.source and source_str and duplicate_candidate.source != source_str:
+                        should_block = True
+                        existing_source_name = duplicate_candidate.source
+                    else:
+                        should_block = False
+                
+                # Check if user wants to force duplicate or overwrite
+                force_duplicate_flag = force_duplicate and str(force_duplicate).lower() == 'true'
+                overwrite_existing = duplicate_candidate_id == duplicate_candidate.id
+                
+                if should_block and not force_duplicate_flag and not overwrite_existing:
+                    # Return duplicate warning instead of blocking
+                    # This allows frontend to show a modal with options
+                    db.close()
+                    return {
+                        "success": False,
+                        "duplicate_detected": True,
+                        "existing_candidate_id": duplicate_candidate.id,
+                        "existing_candidate_name": duplicate_candidate.name,
+                        "existing_candidate_email": duplicate_candidate.email,
+                        "existing_source_name": existing_source_name,
+                        "existing_source_id": existing_company_id,
+                        "message": f"Deze kandidaat is al eerder ingediend door {existing_source_name}. "
+                                  f"Wil je deze kandidaat overschrijven, onderbreken of toch toevoegen?"
+                    }
+                
+                # If force_duplicate or overwrite, continue with creation/update
+                if overwrite_existing:
+                    # Update existing candidate instead of creating new one
+                    existing_candidate = duplicate_candidate
+                    existing_candidate.name = name or existing_candidate.name
+                    existing_candidate.email = email or existing_candidate.email
+                    existing_candidate.resume_text = resume_text
+                    existing_candidate.motivational_letter = motivation_text or existing_candidate.motivational_letter
+                    if final_years_experience is not None:
+                        existing_candidate.experience_years = final_years_experience
+                        existing_candidate.years_experience = final_years_experience
+                    if skills_list:
+                        existing_candidate.skills = "|".join(skills_list)
+                    if education:
+                        existing_candidate.education = education
+                    if job_id:
+                        existing_candidate.job_id = job_id
+                    if preferential_job_ids:
+                        existing_candidate.preferential_job_ids = ",".join(preferential_job_ids)
+                    if company_note_text:
+                        existing_candidate.company_note = company_note_text
+                    
+                    # Update extended fields
+                    existing_candidate.motivation_reason = motivation_reason_str
+                    existing_candidate.test_results = test_results_str
+                    existing_candidate.age = age_int
+                    existing_candidate.skill_tags = skill_tags_json
+                    existing_candidate.prior_job_titles = prior_job_titles_json
+                    existing_candidate.certifications = certifications_json
+                    existing_candidate.education_level = education_level_str
+                    existing_candidate.location = location_str
+                    existing_candidate.communication_level = communication_level_str
+                    existing_candidate.availability_per_week = availability_per_week_int
+                    existing_candidate.notice_period = notice_period_str
+                    existing_candidate.salary_expectation = salary_expectation_int
+                    existing_candidate.source = source_str
+                    existing_candidate.submitted_by_company_id = final_submitted_by_company_id
+                    existing_candidate.pipeline_stage = pipeline_stage_str or existing_candidate.pipeline_stage or 'introduced'
+                    existing_candidate.pipeline_status = pipeline_status_str or existing_candidate.pipeline_status or 'active'
+                    
+                    db.commit()
+                    db.refresh(existing_candidate)
+                    candidate_db = existing_candidate
+                    
+                    # Skip duplicate check and creation since we're updating
+                    response_payload = {
+                        "success": True,
+                        "candidate_id": candidate_db.id,
+                        "resume_length": len(resume_text),
+                        "extracted_text": resume_text[:500] + "..." if len(resume_text) > 500 else resume_text,
+                        "extraction_method": extraction_method,
+                        "azure_used": azure_used or motivation_azure_used,
+                        "overwritten": True
+                    }
+                    db.close()
+                    return response_payload
+            
             candidate_db = CandidateDB(
                 job_id=job_id,
                 name=name,
                 email=email,
                 resume_text=resume_text,
                 motivational_letter=motivation_text,
-                experience_years=experience_years if experience_years is not None else 0,
+                experience_years=final_years_experience if final_years_experience is not None else 0,
+                years_experience=final_years_experience if final_years_experience is not None else 0,
                 skills="|".join(skills_list) if skills_list else "",
                 education=education or "Not specified",
-                company_note=company_note_text
+                company_note=company_note_text,
+                # Extended fields - use processed values
+                motivation_reason=motivation_reason_str,
+                test_results=test_results_str,
+                age=age_int,
+                skill_tags=skill_tags_json,
+                prior_job_titles=prior_job_titles_json,
+                certifications=certifications_json,
+                education_level=education_level_str,
+                location=location_str,
+                communication_level=communication_level_str,
+                availability_per_week=availability_per_week_int,
+                notice_period=notice_period_str,
+                salary_expectation=salary_expectation_int,
+                source=source_str,
+                submitted_by_company_id=final_submitted_by_company_id,  # Track which agency/company submitted
+                pipeline_stage=pipeline_stage_str or 'introduced',
+                pipeline_status=pipeline_status_str or 'active'
             )
             db.add(candidate_db)
             db.commit()
@@ -2198,15 +3056,136 @@ Deze bedrijfsnotitie bevat belangrijke informatie over de kandidaat van het bemi
 LET OP: Als Bureaurecruiter of HR/Inhouse Recruiter moet je deze informatie actief gebruiken. Als er salarisinformatie in staat, gebruik deze in je evaluatie. Als er tegenstrijdigheden zijn tussen CV en bedrijfsnotitie, vertrouw de bedrijfsnotitie.
 {company_note_text}"""
         
+        # Helper function to filter extended candidate info by persona relevance
+        def get_persona_relevant_fields(persona_name: str, candidate) -> List[str]:
+            """Get only the extended candidate fields relevant to this persona"""
+            import json
+            relevant_fields = []
+            
+            persona_name_lower = persona_name.lower()
+            
+            # Parse JSON fields once
+            skill_tags_list = []
+            if candidate.skill_tags:
+                try:
+                    skill_tags_list = json.loads(candidate.skill_tags) if isinstance(candidate.skill_tags, str) else candidate.skill_tags
+                except:
+                    skill_tags_list = []
+            
+            prior_job_titles_list = []
+            if candidate.prior_job_titles:
+                try:
+                    prior_job_titles_list = json.loads(candidate.prior_job_titles) if isinstance(candidate.prior_job_titles, str) else candidate.prior_job_titles
+                except:
+                    prior_job_titles_list = []
+            
+            certifications_list = []
+            if candidate.certifications:
+                try:
+                    certifications_list = json.loads(candidate.certifications) if isinstance(candidate.certifications, str) else candidate.certifications
+                except:
+                    certifications_list = []
+            
+            # Define field relevance per persona type
+            # Tech Lead / Hiring Manager: Technical skills, experience, certifications, test results
+            if 'tech' in persona_name_lower or 'hiring' in persona_name_lower:
+                if candidate.years_experience or candidate.experience_years:
+                    years = candidate.years_experience or candidate.experience_years
+                    relevant_fields.append(f"Jaren ervaring: {years}")
+                if skill_tags_list:
+                    skill_tags_str = ", ".join(skill_tags_list) if isinstance(skill_tags_list, list) else str(skill_tags_list)
+                    relevant_fields.append(f"Vaardigheden tags: {skill_tags_str}")
+                if prior_job_titles_list:
+                    prior_jobs_str = ", ".join(prior_job_titles_list) if isinstance(prior_job_titles_list, list) else str(prior_job_titles_list)
+                    relevant_fields.append(f"Eerdere functietitels: {prior_jobs_str}")
+                if certifications_list:
+                    certs_str = ", ".join(certifications_list) if isinstance(certifications_list, list) else str(certifications_list)
+                    relevant_fields.append(f"Certificeringen: {certs_str}")
+                if candidate.education_level:
+                    relevant_fields.append(f"Opleidingsniveau: {candidate.education_level}")
+                if candidate.test_results:
+                    relevant_fields.append(f"Testresultaten / Vaardigheidsscores: {candidate.test_results}")
+            
+            # Finance Director: Salary, availability, notice period, compensation-related
+            if 'finance' in persona_name_lower:
+                if candidate.salary_expectation:
+                    relevant_fields.append(f"Salarisverwachting: €{candidate.salary_expectation}/jaar (op basis van 40 uur/week)")
+                if candidate.availability_per_week:
+                    relevant_fields.append(f"Beschikbaarheid per week: {candidate.availability_per_week} uur/week")
+                if candidate.notice_period:
+                    relevant_fields.append(f"Opzegtermijn: {candidate.notice_period}")
+            
+            # HR Recruiter / Bureaurecruiter: Motivation, communication, availability, notice period, location, source
+            if 'hr' in persona_name_lower or 'recruiter' in persona_name_lower or 'bureau' in persona_name_lower:
+                if candidate.motivation_reason:
+                    relevant_fields.append(f"Motivatie voor rol / Reden van vertrek: {candidate.motivation_reason}")
+                if candidate.communication_level:
+                    relevant_fields.append(f"Communicatieniveau: {candidate.communication_level}")
+                if candidate.location:
+                    relevant_fields.append(f"Locatie: {candidate.location}")
+                if candidate.availability_per_week:
+                    relevant_fields.append(f"Beschikbaarheid per week: {candidate.availability_per_week} uur/week")
+                if candidate.notice_period:
+                    relevant_fields.append(f"Opzegtermijn: {candidate.notice_period}")
+                if candidate.source:
+                    relevant_fields.append(f"Bron / Hoe gevonden: {candidate.source}")
+                if candidate.age:
+                    relevant_fields.append(f"Leeftijd: {candidate.age} jaar")  # For diversity/inclusion considerations
+            
+            # HR / Inhouse Recruiter: Also education level for compliance
+            if 'hr' in persona_name_lower or 'inhouse' in persona_name_lower:
+                if candidate.education_level:
+                    relevant_fields.append(f"Opleidingsniveau: {candidate.education_level}")
+            
+            return relevant_fields
+        
         # Evaluate for each selected persona - PARALLELIZED for performance
         async def evaluate_single_persona(persona):
             """Evaluate a single persona - designed to run in parallel"""
             persona_prompt = persona_prompts.get(persona.name, persona.system_prompt)
             
+            # Get persona-relevant extended fields only (filter by role)
+            persona_relevant_fields = get_persona_relevant_fields(persona.name, candidate)
+            persona_extended_info = ""
+            if persona_relevant_fields:
+                persona_extended_text = "\n".join(persona_relevant_fields)
+                persona_extended_info = f"""
+
+BELANGRIJK - STRUCTUREDE KANDIDAATINFORMATIE (Relevant voor {persona.display_name}):
+Deze gestructureerde informatie is expliciet opgeslagen voor deze kandidaat en is relevant voor jouw evaluatie vanuit jouw perspectief. Gebruik deze informatie actief in je beoordeling.
+
+{truncate_text_safely(persona_extended_text, 1500)}"""
+            
+            # Get personal criteria if available
+            import json
+            personal_criteria_text = ""
+            if hasattr(persona, 'personal_criteria') and persona.personal_criteria:
+                try:
+                    personal_criteria_data = json.loads(persona.personal_criteria) if isinstance(persona.personal_criteria, str) else persona.personal_criteria
+                    if personal_criteria_data:
+                        if isinstance(personal_criteria_data, list):
+                            personal_criteria_items = personal_criteria_data
+                        elif isinstance(personal_criteria_data, dict):
+                            personal_criteria_items = list(personal_criteria_data.values())
+                        else:
+                            personal_criteria_items = [str(personal_criteria_data)]
+                        
+                        if personal_criteria_items:
+                            criteria_list = "\n".join([f"- {item}" for item in personal_criteria_items if item])
+                            personal_criteria_text = f"""
+
+BELANGRIJK - PERSOONLIJKE EVALUATIECRITERIA (Aangepast voor deze digitale werknemer):
+De volgende persoonlijke criteria zijn aangepast voor deze digitale werknemer en moeten actief worden gebruikt in je evaluatie:
+{criteria_list}"""
+                except:
+                    pass  # Ignore invalid JSON
+            
             # Build system prompt for this persona - they evaluate from their own perspective
-            system_prompt = f"""Je bent {persona.display_name}. Je beoordelingsstijl: {persona_prompt}
+            system_prompt = f"""Je bent {persona.display_name}. Je beoordelingsstijl: {persona_prompt}{personal_criteria_text}
 
 Je evalueert deze kandidaat vanuit jouw perspectief. Geef een beoordeling met scores, sterke punten, aandachtspunten en advies.
+
+BELANGRIJK: Maak actief gebruik van alle beschikbare informatie die relevant is voor jouw perspectief. Focus alleen op aspecten die binnen jouw expertise vallen.{' Gebruik daarnaast actief de persoonlijke evaluatiecriteria hierboven.' if personal_criteria_text else ''}
 
 IMPORTANT: Antwoord met een geldig JSON object:
 {{
@@ -2224,15 +3203,25 @@ IMPORTANT: Antwoord met een geldig JSON object:
 BELANGRIJK:
 - Score MOET tussen 1.0 en 10.0 liggen
 - Recommendation moet consistent zijn met score: >= 7.0 = "Sterk geschikt", >= 5.0 = "Twijfelgeval", < 5.0 = "Niet passend"
+- Maak gebruik van alle beschikbare kandidaatgegevens (gestructureerde velden en CV) in je beoordeling
 
 Geef geen tekst buiten het JSON object."""
             
             # MAKE SURE we're sending clean text to OpenAI
             # All text is already truncated above, so we can safely build the prompt
+            # Use persona-specific extended info (filtered by role relevance)
             user_prompt = f"""Evalueer deze kandidaat vanuit jouw perspectief als {persona.display_name}:
 
 CV:
-{resume_text}{motivational_info}{job_info}{company_note_info}
+{resume_text}{motivational_info}{persona_extended_info}{job_info}{company_note_info}
+
+BELANGRIJK: Maak actief gebruik van alle beschikbare informatie die relevant is voor jouw rol:
+- CV en motivatiebrief (basis informatie)
+- Gestructureerde kandidaatgegevens (alleen velden relevant voor jouw expertise - zie hierboven)
+- Vacaturevereisten
+- Bedrijfsnotitie (indien beschikbaar)
+
+FOCUS: Evalueer alleen op aspecten die binnen jouw expertise vallen. Laat andere aspecten (buiten jouw expertise) buiten beschouwing of verwijs kort naar anderen.
 
 Geef een score (1-10), sterke punten, aandachtspunten, analyse en advies. Benoem expliciet grote matches of mismatches."""
             
@@ -2608,6 +3597,13 @@ BELANGRIJK:
             traceback.print_exc()
             # Continue even if saving fails
         
+        # Ensure database is closed before returning
+        if db:
+            try:
+                db.close()
+            except:
+                pass
+        
         # Return evaluations from all personas with combined analysis
         return {
             "success": True,
@@ -2619,20 +3615,54 @@ BELANGRIJK:
             "result_id": result_id  # Include result_id so frontend can navigate directly
         }
         
+    except HTTPException:
+        # Re-raise HTTPExceptions (they already have proper status codes)
+        if db:
+            try:
+                db.close()
+            except:
+                pass
+        raise
     except Exception as e:
-        return {
-            "success": False,
-            "error": str(e)
-        }
+        # Log the full error with traceback
+        print(f"Unexpected error in evaluate-candidate endpoint: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        
+        # Ensure database is closed
+        if db:
+            try:
+                db.close()
+            except:
+                pass
+        
+        # Raise HTTPException with proper status code
+        raise HTTPException(
+            status_code=500,
+            detail=f"Evaluation failed: {str(e)}"
+        )
 
 @app.get("/candidates")
-async def get_candidates(job_id: Optional[str] = None):
-    """Get all evaluated candidates with their evaluations"""
+async def get_candidates(job_id: Optional[str] = None, company_id: Optional[str] = None):
+    """Get all evaluated candidates with their evaluations, optionally filtered by company_id"""
     try:
         db = SessionLocal()
         
         # Get candidates with their evaluations and job info
         query = db.query(CandidateDB)
+        
+        # Filter by company_id if provided (multi-portal isolation)
+        # Candidates belong to a company through their submitted_by_company_id or through their job's company_id
+        if company_id:
+            # Filter candidates that belong to this company (either directly submitted by company or through job)
+            subquery = db.query(JobPostingDB.id).filter(JobPostingDB.company_id == company_id).subquery()
+            query = query.filter(
+                or_(
+                    CandidateDB.submitted_by_company_id == company_id,
+                    CandidateDB.job_id.in_(subquery)
+                )
+            )
+        
         if job_id:
             # Filter by job_id OR by preferential_job_ids containing the job_id
             query = query.filter(
@@ -2656,6 +3686,28 @@ async def get_candidates(job_id: Optional[str] = None):
                         "company": job.company,
                         "location": job.location
                     }
+            
+            # Parse JSON fields
+            skill_tags = None
+            if candidate.skill_tags:
+                try:
+                    skill_tags = json.loads(candidate.skill_tags) if isinstance(candidate.skill_tags, str) else candidate.skill_tags
+                except:
+                    skill_tags = candidate.skill_tags
+            
+            prior_job_titles = None
+            if candidate.prior_job_titles:
+                try:
+                    prior_job_titles = json.loads(candidate.prior_job_titles) if isinstance(candidate.prior_job_titles, str) else candidate.prior_job_titles
+                except:
+                    prior_job_titles = candidate.prior_job_titles
+            
+            certifications = None
+            if candidate.certifications:
+                try:
+                    certifications = json.loads(candidate.certifications) if isinstance(candidate.certifications, str) else candidate.certifications
+                except:
+                    certifications = candidate.certifications
             
             # Get evaluations
             evaluations = db.query(EvaluationDB).filter(EvaluationDB.candidate_id == candidate.id).all()
@@ -2685,7 +3737,24 @@ async def get_candidates(job_id: Optional[str] = None):
                     for eval in evaluations
                 ],
                 "evaluation_count": len(evaluations),
-                "conversation_count": conversation_count
+                "conversation_count": conversation_count,
+                # Extended fields
+                "motivation_reason": candidate.motivation_reason,
+                "test_results": candidate.test_results,
+                "age": candidate.age,
+                "years_experience": candidate.years_experience,
+                "skill_tags": skill_tags,
+                "prior_job_titles": prior_job_titles,
+                "certifications": certifications,
+                "education_level": candidate.education_level,
+                "location": candidate.location,
+                "communication_level": candidate.communication_level,
+                "availability_per_week": candidate.availability_per_week,
+                "notice_period": candidate.notice_period,
+                "salary_expectation": candidate.salary_expectation,
+                "source": candidate.source,
+                "pipeline_stage": candidate.pipeline_stage,
+                "pipeline_status": candidate.pipeline_status,
             })
         
         db.close()
@@ -2794,6 +3863,98 @@ async def create_candidate_conversation(request_data: CandidateConversationReque
         print(f"Error creating conversation: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to save conversation: {str(e)}")
 
+@app.put("/candidates/{candidate_id}")
+async def update_candidate(
+    candidate_id: str,
+    request: Request,
+    current_user: UserDB = Depends(get_current_user)
+):
+    """Update candidate details (company note, etc.)"""
+    try:
+        db = SessionLocal()
+        candidate = db.query(CandidateDB).filter(CandidateDB.id == candidate_id).first()
+        if not candidate:
+            db.close()
+            raise HTTPException(status_code=404, detail="Candidate not found")
+        
+        # Check permissions - only recruiter who submitted or admin can update
+        is_admin = current_user.role == "admin"
+        is_submitter = candidate.submitted_by_company_id == current_user.company_id
+        
+        if not (is_admin or is_submitter):
+            db.close()
+            raise HTTPException(
+                status_code=403,
+                detail="You can only update candidates you submitted or if you are an admin"
+            )
+        
+        # Parse request body
+        content_type = request.headers.get("content-type", "")
+        data = {}
+        
+        if "application/json" in content_type:
+            try:
+                data = await request.json()
+            except:
+                pass
+        else:
+            form_data = await request.form()
+            data = dict(form_data)
+        
+        # Update company note if provided
+        if "company_note" in data:
+            candidate.company_note = data["company_note"] if data["company_note"] else None
+        
+        db.commit()
+        db.refresh(candidate)
+        
+        # Serialize candidate for response
+        job = None
+        if candidate.job_id:
+            job = db.query(JobPostingDB).filter(JobPostingDB.id == candidate.job_id).first()
+        
+        job_info = None
+        if job:
+            job_info = {
+                "id": job.id,
+                "title": job.title,
+                "company": job.company
+            }
+        
+        # Parse JSON fields
+        import json
+        skill_tags = None
+        if candidate.skill_tags:
+            try:
+                skill_tags = json.loads(candidate.skill_tags) if isinstance(candidate.skill_tags, str) else candidate.skill_tags
+            except:
+                skill_tags = candidate.skill_tags
+        
+        db.close()
+        
+        return {
+            "success": True,
+            "candidate": {
+                "id": candidate.id,
+                "name": candidate.name,
+                "email": candidate.email,
+                "job": job_info,
+                "job_id": candidate.job_id,
+                "company_note": candidate.company_note,
+                "pipeline_stage": candidate.pipeline_stage,
+                "pipeline_status": candidate.pipeline_status,
+                "submitted_by_company_id": candidate.submitted_by_company_id,
+                "created_at": candidate.created_at.isoformat() if candidate.created_at else None
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating candidate: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to update candidate: {str(e)}")
+
 @app.get("/candidates/{candidate_id}")
 async def get_candidate_detail(candidate_id: str):
     """Detailed candidate view including full resume and conversations"""
@@ -2817,6 +3978,28 @@ async def get_candidate_detail(candidate_id: str):
 
         conversation_count = db.query(CandidateConversationDB).filter(CandidateConversationDB.candidate_id == candidate.id).count()
 
+        # Parse JSON fields for candidate detail
+        skill_tags = None
+        if candidate.skill_tags:
+            try:
+                skill_tags = json.loads(candidate.skill_tags) if isinstance(candidate.skill_tags, str) else candidate.skill_tags
+            except:
+                skill_tags = candidate.skill_tags
+        
+        prior_job_titles = None
+        if candidate.prior_job_titles:
+            try:
+                prior_job_titles = json.loads(candidate.prior_job_titles) if isinstance(candidate.prior_job_titles, str) else candidate.prior_job_titles
+            except:
+                prior_job_titles = candidate.prior_job_titles
+        
+        certifications = None
+        if candidate.certifications:
+            try:
+                certifications = json.loads(candidate.certifications) if isinstance(candidate.certifications, str) else candidate.certifications
+            except:
+                certifications = candidate.certifications
+        
         result = {
             "id": candidate.id,
             "name": candidate.name,
@@ -2831,7 +4014,24 @@ async def get_candidate_detail(candidate_id: str):
             "preferential_job_ids": candidate.preferential_job_ids,
             "company_note": candidate.company_note,
             "created_at": candidate.created_at.isoformat() if candidate.created_at else None,
-            "conversation_count": conversation_count
+            "conversation_count": conversation_count,
+            # Extended fields
+            "motivation_reason": candidate.motivation_reason,
+            "test_results": candidate.test_results,
+            "age": candidate.age,
+            "years_experience": candidate.years_experience,
+            "skill_tags": skill_tags,
+            "prior_job_titles": prior_job_titles,
+            "certifications": certifications,
+            "education_level": candidate.education_level,
+            "location": candidate.location,
+            "communication_level": candidate.communication_level,
+            "availability_per_week": candidate.availability_per_week,
+            "notice_period": candidate.notice_period,
+            "salary_expectation": candidate.salary_expectation,
+            "source": candidate.source,
+            "pipeline_stage": candidate.pipeline_stage,
+            "pipeline_status": candidate.pipeline_status,
         }
         db.close()
         return {"success": True, "candidate": result}
@@ -2840,6 +4040,120 @@ async def get_candidate_detail(candidate_id: str):
     except Exception as e:
         print(f"Error fetching candidate detail: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch candidate detail: {str(e)}")
+
+@app.put("/candidates/{candidate_id}/pipeline")
+async def update_candidate_pipeline(
+    candidate_id: str,
+    request: Request
+):
+    """Update candidate pipeline stage, status, and job assignments - supports both JSON and Form data"""
+    try:
+        db = SessionLocal()
+        candidate = db.query(CandidateDB).filter(CandidateDB.id == candidate_id).first()
+        if not candidate:
+            db.close()
+            raise HTTPException(status_code=404, detail="Candidate not found")
+        
+        # Check if request is JSON
+        content_type = request.headers.get("content-type", "")
+        data = {}
+        
+        if "application/json" in content_type:
+            try:
+                data = await request.json()
+            except:
+                pass
+        else:
+            form_data = await request.form()
+            data = {
+                "pipeline_stage": form_data.get("pipeline_stage"),
+                "pipeline_status": form_data.get("pipeline_status"),
+                "job_id": form_data.get("job_id"),
+                "preferential_job_ids": form_data.get("preferential_job_ids")
+            }
+        
+        # Update job_id if provided
+        if "job_id" in data and data["job_id"] is not None:
+            # Verify job exists
+            job = db.query(JobPostingDB).filter(JobPostingDB.id == data["job_id"]).first()
+            if job:
+                candidate.job_id = data["job_id"]
+            else:
+                db.close()
+                raise HTTPException(status_code=404, detail=f"Job {data['job_id']} not found")
+        
+        # Update preferential_job_ids if provided
+        if "preferential_job_ids" in data and data["preferential_job_ids"] is not None:
+            # Verify all jobs exist
+            pref_job_ids = [jid.strip() for jid in str(data["preferential_job_ids"]).split(",") if jid.strip()]
+            for job_id in pref_job_ids:
+                job = db.query(JobPostingDB).filter(JobPostingDB.id == job_id).first()
+                if not job:
+                    db.close()
+                    raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+            candidate.preferential_job_ids = data["preferential_job_ids"]
+        
+        # Validate and update pipeline_stage
+        valid_stages = ['introduced', 'review', 'first_interview', 'second_interview', 'offer', 'complete']
+        if "pipeline_stage" in data and data["pipeline_stage"] is not None:
+            if data["pipeline_stage"] not in valid_stages:
+                db.close()
+                raise HTTPException(status_code=400, detail=f"Invalid pipeline_stage. Must be one of: {', '.join(valid_stages)}")
+            candidate.pipeline_stage = data["pipeline_stage"]
+        
+        # Validate and update pipeline_status
+        valid_statuses = ['active', 'on_hold', 'rejected', 'accepted']
+        if "pipeline_status" in data and data["pipeline_status"] is not None:
+            if data["pipeline_status"] not in valid_statuses:
+                db.close()
+                raise HTTPException(status_code=400, detail=f"Invalid pipeline_status. Must be one of: {', '.join(valid_statuses)}")
+            candidate.pipeline_status = data["pipeline_status"]
+        
+        db.commit()
+        db.refresh(candidate)
+        
+        # Parse JSON fields for response
+        skill_tags = None
+        if candidate.skill_tags:
+            try:
+                skill_tags = json.loads(candidate.skill_tags) if isinstance(candidate.skill_tags, str) else candidate.skill_tags
+            except:
+                skill_tags = candidate.skill_tags
+        
+        prior_job_titles = None
+        if candidate.prior_job_titles:
+            try:
+                prior_job_titles = json.loads(candidate.prior_job_titles) if isinstance(candidate.prior_job_titles, str) else candidate.prior_job_titles
+            except:
+                prior_job_titles = candidate.prior_job_titles
+        
+        certifications = None
+        if candidate.certifications:
+            try:
+                certifications = json.loads(candidate.certifications) if isinstance(candidate.certifications, str) else candidate.certifications
+            except:
+                certifications = candidate.certifications
+        
+        result = {
+            "success": True,
+            "message": "Candidate pipeline updated successfully",
+            "candidate": {
+                "id": candidate.id,
+                "name": candidate.name,
+                "pipeline_stage": candidate.pipeline_stage,
+                "pipeline_status": candidate.pipeline_status,
+                "skill_tags": skill_tags,
+                "prior_job_titles": prior_job_titles,
+                "certifications": certifications
+            }
+        }
+        db.close()
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating candidate pipeline: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to update candidate pipeline: {str(e)}")
 
 @app.post("/debate-candidate")
 async def debate_candidate(
@@ -2850,7 +4164,12 @@ async def debate_candidate(
     request: Request = None
 ):
     """Multi-expert debate between selected personas"""
+    db = None
     try:
+        print(f"\n=== DEBATE REQUEST START ===")
+        print(f"candidate_id: {candidate_id}")
+        print(f"job_id: {job_id}")
+        print(f"company_note: {'present' if company_note else 'none'}")
         # Get form data to extract dynamic persona prompts
         form_data = await request.form()
         
@@ -2926,6 +4245,92 @@ Each persona should evaluate the candidate from their perspective and then engag
 MOTIVATIONAL LETTER:
 {candidate.motivational_letter}"""
         
+        # Build extended candidate information section for debate (candidate-5: ensure digital employees assess all new fields)
+        # Re-use same logic as in evaluate-candidate
+        debate_extended_info_sections = []
+        
+        # Parse JSON fields
+        import json
+        debate_skill_tags_list = []
+        if candidate.skill_tags:
+            try:
+                debate_skill_tags_list = json.loads(candidate.skill_tags) if isinstance(candidate.skill_tags, str) else candidate.skill_tags
+            except:
+                debate_skill_tags_list = []
+        
+        debate_prior_job_titles_list = []
+        if candidate.prior_job_titles:
+            try:
+                debate_prior_job_titles_list = json.loads(candidate.prior_job_titles) if isinstance(candidate.prior_job_titles, str) else candidate.prior_job_titles
+            except:
+                debate_prior_job_titles_list = []
+        
+        debate_certifications_list = []
+        if candidate.certifications:
+            try:
+                debate_certifications_list = json.loads(candidate.certifications) if isinstance(candidate.certifications, str) else candidate.certifications
+            except:
+                debate_certifications_list = []
+        
+        # Build structured extended information for debate
+        if candidate.motivation_reason:
+            debate_extended_info_sections.append(f"Motivatie voor rol / Reden van vertrek: {candidate.motivation_reason}")
+        
+        if candidate.test_results:
+            debate_extended_info_sections.append(f"Testresultaten / Vaardigheidsscores: {candidate.test_results}")
+        
+        if candidate.age:
+            debate_extended_info_sections.append(f"Leeftijd: {candidate.age} jaar")
+        
+        if candidate.years_experience:
+            debate_extended_info_sections.append(f"Jaren ervaring: {candidate.years_experience}")
+        elif candidate.experience_years:
+            debate_extended_info_sections.append(f"Jaren ervaring: {candidate.experience_years}")
+        
+        if debate_skill_tags_list:
+            skill_tags_str = ", ".join(debate_skill_tags_list) if isinstance(debate_skill_tags_list, list) else str(debate_skill_tags_list)
+            debate_extended_info_sections.append(f"Vaardigheden tags: {skill_tags_str}")
+        
+        if debate_prior_job_titles_list:
+            prior_jobs_str = ", ".join(debate_prior_job_titles_list) if isinstance(debate_prior_job_titles_list, list) else str(debate_prior_job_titles_list)
+            debate_extended_info_sections.append(f"Eerdere functietitels: {prior_jobs_str}")
+        
+        if debate_certifications_list:
+            certs_str = ", ".join(debate_certifications_list) if isinstance(debate_certifications_list, list) else str(debate_certifications_list)
+            debate_extended_info_sections.append(f"Certificeringen: {certs_str}")
+        
+        if candidate.education_level:
+            debate_extended_info_sections.append(f"Opleidingsniveau: {candidate.education_level}")
+        
+        if candidate.location:
+            debate_extended_info_sections.append(f"Locatie: {candidate.location}")
+        
+        if candidate.communication_level:
+            debate_extended_info_sections.append(f"Communicatieniveau: {candidate.communication_level}")
+        
+        if candidate.availability_per_week:
+            debate_extended_info_sections.append(f"Beschikbaarheid per week: {candidate.availability_per_week} uur/week")
+        
+        if candidate.notice_period:
+            debate_extended_info_sections.append(f"Opzegtermijn: {candidate.notice_period}")
+        
+        if candidate.salary_expectation:
+            debate_extended_info_sections.append(f"Salarisverwachting: €{candidate.salary_expectation}/jaar (op basis van 40 uur/week)")
+        
+        if candidate.source:
+            debate_extended_info_sections.append(f"Bron / Hoe gevonden: {candidate.source}")
+        
+        # Combine extended info for debate
+        debate_extended_candidate_info = ""
+        if debate_extended_info_sections:
+            extended_info_text = "\n".join(debate_extended_info_sections)
+            debate_extended_candidate_info = f"""
+
+BELANGRIJK - STRUCTUREDE KANDIDAATINFORMATIE:
+Deze gestructureerde informatie is expliciet opgeslagen voor deze kandidaat. Gebruik deze informatie actief in je discussie, vooral als deze relevanter of actueler is dan informatie uit het CV.
+
+{truncate_text_safely(extended_info_text, 2000)}"""
+        
         # Include company note if provided (guidance only, not ground truth)
         company_note_text = company_note
         if company_note_file and company_note_file.filename:
@@ -2947,38 +4352,89 @@ Deze bedrijfsnotitie bevat belangrijke informatie over de kandidaat van de makel
 Neem deze informatie serieus mee in je discussie en evaluatie.
 {company_note_text}"""
         
+        # Initialize variables before try block
+        response = None
+        timing_data = {}
+        full_prompt_text = ""
+        
         # Use LangChain multi-agent system for realistic debate
         try:
+            # Try to import langchain_debate - this will fail if langchain_openai is not installed
             from langchain_debate import run_multi_agent_debate
+            LANGCHAIN_AVAILABLE = True
             
-            candidate_info = f"{candidate.resume_text}{motivational_info}"
+            # For debate, we still include all candidate info in the base candidate_info
+            # But personas will focus on what's relevant to them based on their prompts and instructions
+            # This allows them to reference other aspects if needed in discussion, but focus on their domain
+            candidate_info_base = f"{candidate.resume_text}{motivational_info}"
+            
+            # Optionally add a note about structured fields being available but to focus on relevant ones
+            if debate_extended_candidate_info:
+                # Add a note that structured info is available but personas should focus on their domain
+                candidate_info_base += f"""
+
+BELANGRIJK - STRUCTUREDE KANDIDAATINFORMATIE (beschikbaar voor alle experts):
+Deze gestructureerde informatie is expliciet opgeslagen voor deze kandidaat. Focus in je discussie alleen op aspecten die relevant zijn voor jouw expertise.
+{debate_extended_candidate_info.replace('BELANGRIJK - STRUCTUREDE KANDIDAATINFORMATIE:', 'STRUCTUREDE INFORMATIE (focus op wat relevant is voor jouw rol):')}
+"""
+            
+            candidate_info = candidate_info_base
             
             print(f"Calling run_multi_agent_debate with {len(persona_prompts)} personas...")
-            response = await run_multi_agent_debate(
+            debate_result = await run_multi_agent_debate(
                 persona_prompts=persona_prompts,
                 candidate_info=candidate_info,
                 job_info=job_info,
-                company_note=company_note_text if company_note_text else None
+                company_note=company_note_text if company_note_text else None,
+                track_timing=True
             )
             
-            print(f"Debate response type: {type(response)}, length: {len(str(response))}")
-            
-            # Validate response is JSON
+            # Handle tuple return (response, timing_data)
             try:
-                import json
-                parsed = json.loads(response)
-                if isinstance(parsed, list):
-                    print(f"✓ Valid JSON array with {len(parsed)} messages")
+                if isinstance(debate_result, tuple) and len(debate_result) == 2:
+                    response, timing_data = debate_result
+                    print(f"✓ Extracted tuple: response type={type(response)}, timing_data keys={list(timing_data.keys()) if timing_data else []}")
+                elif isinstance(debate_result, tuple):
+                    # Handle unexpected tuple length
+                    response = debate_result[0] if len(debate_result) > 0 else ""
+                    if len(debate_result) > 1:
+                        timing_data = debate_result[1] if isinstance(debate_result[1], dict) else {}
+                    print(f"⚠ Unexpected tuple length: {len(debate_result)}, using first element")
                 else:
-                    print(f"⚠ Response is JSON but not an array: {type(parsed)}")
-            except json.JSONDecodeError:
-                print(f"⚠ Response is not valid JSON, first 200 chars: {str(response)[:200]}")
+                    response = debate_result
+                    timing_data = {}
+                    print(f"⚠ Debate result is not a tuple, type: {type(debate_result)}")
+                
+                # Ensure response is not None
+                if response is None:
+                    raise ValueError("Debate response is None")
+                
+                print(f"Debate response type: {type(response)}, length: {len(str(response)) if response else 0}")
+                
+                # Validate response is JSON string
+                if isinstance(response, str):
+                    try:
+                        import json
+                        parsed = json.loads(response)
+                        if isinstance(parsed, list):
+                            print(f"✓ Valid JSON array with {len(parsed)} messages")
+                        else:
+                            print(f"⚠ Response is JSON but not an array: {type(parsed)}")
+                    except json.JSONDecodeError:
+                        print(f"⚠ Response is not valid JSON string, first 200 chars: {str(response)[:200]}")
+            except Exception as unpack_error:
+                print(f"Error unpacking debate result: {unpack_error}")
+                import traceback
+                traceback.print_exc()
+                raise HTTPException(status_code=500, detail=f"Failed to process debate result: {str(unpack_error)}")
             
             # Build full prompt for display
             full_prompt_text = f"LANGCHAIN MULTI-AGENT DEBATE SYSTEM\n\nModerator + {len(persona_prompts)} Persona Agents\n\nPersonas: {', '.join(persona_prompts.keys())}\n\nDebate structured with:\n1. Moderator introduction\n2. Initial thoughts from each persona\n3. Multiple rounds of discussion\n4. Final summary from moderator"
             
         except ImportError as e:
             print(f"ImportError: {e}")
+            import traceback
+            traceback.print_exc()
             # Fallback to simple OpenAI if LangChain not available
             print("LangChain not available, falling back to simple debate...")
             user_prompt = f"""Please facilitate a debate between the {len(persona_prompts)} personas about this candidate:
@@ -2997,14 +4453,37 @@ Each persona should provide their evaluation and then engage in a professional d
                 db.close()
                 raise HTTPException(status_code=500, detail=f"AI debate failed: {openai_result['error']}")
             
+            # Ensure response and timing_data are initialized
             response = openai_result["result"].choices[0].message.content
             full_prompt_text = f"SYSTEM PROMPT:\n{system_prompt}\n\nUSER PROMPT:\n{user_prompt}"
+            timing_data = {}  # Create empty timing data for fallback
         
-        # Prepare result data
+        # Response is already unpacked above (if from LangChain), now format it
+        # Ensure response is initialized
+        if response is None:
+            db.close()
+            raise HTTPException(status_code=500, detail="Debate returned no response")
+        
+        debate_response = response
+        debate_timing_data = timing_data if timing_data else {}
+        
+        print(f"Processing debate_response: type={type(debate_response)}, timing_data steps={len(debate_timing_data.get('steps', []))}")
+        
+        # Ensure debate_response is a string
+        if isinstance(debate_response, (dict, list)):
+            debate_response = json.dumps(debate_response, ensure_ascii=False)
+        elif not isinstance(debate_response, str):
+            debate_response = str(debate_response) if debate_response else ""
+        
+        if not debate_response:
+            db.close()
+            raise HTTPException(status_code=500, detail="Debate returned empty response")
+        
         result_data = {
-            "debate": response,
+            "debate": debate_response,
             "full_prompt": full_prompt_text,
-            "tokens_used": 0  # LangChain doesn't return token count in same format
+            "tokens_used": 0,  # LangChain doesn't return token count in same format
+            "timing_data": debate_timing_data
         }
         
         # Initialize result_id variable
@@ -3073,18 +4552,117 @@ Each persona should provide their evaluation and then engage in a professional d
         
         db.close()
         
+        # Ensure debate_response is properly formatted (already formatted above, but double-check)
+        final_debate_response = debate_response
+        if isinstance(final_debate_response, (dict, list)):
+            final_debate_response = json.dumps(final_debate_response, ensure_ascii=False)
+        elif not isinstance(final_debate_response, str):
+            final_debate_response = str(final_debate_response) if final_debate_response else ""
+        
+        # Ensure timing_data is serializable
+        try:
+            # Convert timing_data to ensure it's JSON-serializable
+            if debate_timing_data and isinstance(debate_timing_data, dict):
+                # Convert timestamps to numbers if needed
+                processed_timing = {
+                    'start_time': float(debate_timing_data.get('start_time', 0)) if isinstance(debate_timing_data.get('start_time'), (int, float)) else 0,
+                    'end_time': float(debate_timing_data.get('end_time', 0)) if isinstance(debate_timing_data.get('end_time'), (int, float)) else 0,
+                    'total': float(debate_timing_data.get('total', 0)) if isinstance(debate_timing_data.get('total'), (int, float)) else 0,
+                    'steps': []
+                }
+                # Process steps array
+                if 'steps' in debate_timing_data and isinstance(debate_timing_data['steps'], list):
+                    for step in debate_timing_data['steps']:
+                        if isinstance(step, dict):
+                            processed_step = {}
+                            for key, value in step.items():
+                                # Convert timestamp to float if it's a number
+                                if key == 'timestamp':
+                                    processed_step[key] = float(value) if isinstance(value, (int, float)) else value
+                                elif key == 'duration':
+                                    processed_step[key] = float(value) if isinstance(value, (int, float)) else value
+                                # Keep other fields as-is (strings, lists, etc.)
+                                else:
+                                    processed_step[key] = value
+                            processed_timing['steps'].append(processed_step)
+                        else:
+                            processed_timing['steps'].append(step)
+                debate_timing_data = processed_timing
+        except Exception as timing_error:
+            print(f"Error processing timing data: {timing_error}")
+            import traceback
+            traceback.print_exc()
+            debate_timing_data = {}
+        
+        print(f"Final return: debate length={len(final_debate_response)}, timing_data steps={len(debate_timing_data.get('steps', []))}")
+        
         return {
             "success": True,
-            "debate": response,
+            "debate": final_debate_response,
             "tokens_used": 0,  # LangChain doesn't return token count in same format
             "full_prompt": full_prompt_text,
+            "timing_data": debate_timing_data,  # Include timing data for workflow visualization
             "result_id": result_id  # Include result_id so frontend can navigate directly
         }
         
+    except HTTPException:
+        # Re-raise HTTPExceptions (they already have proper status codes)
+        if db:
+            try:
+                db.close()
+            except:
+                pass
+        raise
     except Exception as e:
-        print(f"Error in debate: {str(e)}")
+        error_msg = f"Error in debate endpoint: {str(e)}"
+        error_type = type(e).__name__
+        
+        # Log to console
+        print(f"\n{'='*60}")
+        print(f"ERROR IN DEBATE ENDPOINT")
+        print(f"{'='*60}")
+        print(f"Error: {error_msg}")
+        print(f"Error type: {error_type}")
+        print(f"\nFull traceback:")
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Debate failed: {str(e)}")
+        print(f"{'='*60}\n")
+        
+        # Log to file for debugging
+        try:
+            import os
+            log_dir = os.path.join(os.path.dirname(__file__), 'logs')
+            os.makedirs(log_dir, exist_ok=True)
+            log_file = os.path.join(log_dir, 'debate_errors.log')
+            with open(log_file, 'a') as f:
+                from datetime import datetime
+                f.write(f"\n{'='*60}\n")
+                f.write(f"ERROR AT {datetime.now().isoformat()}\n")
+                f.write(f"{'='*60}\n")
+                f.write(f"Error: {error_msg}\n")
+                f.write(f"Error type: {error_type}\n")
+                f.write(f"Full traceback:\n")
+                traceback.print_exception(type(e), e, e.__traceback__, file=f)
+                f.write(f"{'='*60}\n\n")
+            print(f"Error logged to: {log_file}")
+        except Exception as log_error:
+            print(f"Failed to write error log: {log_error}")
+        
+        # Ensure database is closed
+        if db:
+            try:
+                db.close()
+            except:
+                pass
+        
+        # Create detailed error message
+        error_detail = f"Debate failed: {str(e)}"
+        # Try to get more context about the error
+        if "tuple" in str(e).lower() or "unpack" in str(e).lower():
+            error_detail = f"Debate failed - Error processing response: {str(e)}"
+        elif "response" in str(e).lower() and ("not defined" in str(e).lower() or "None" in str(e)):
+            error_detail = f"Debate failed - Response processing error: {str(e)}"
+        
+        raise HTTPException(status_code=500, detail=error_detail)
 
 @app.post("/debate-chat")
 async def debate_chat(request: DebateChatRequest):
@@ -3679,7 +5257,6 @@ def job_overview(job_id: str):
 
 @app.get("/debug-candidate/{candidate_id}")
 def debug_candidate(candidate_id: str):
-    """Debug endpoint to see what's stored"""
     db = SessionLocal()
     candidate = db.query(CandidateDB).filter(CandidateDB.id == candidate_id).first()
     db.close()
@@ -3702,12 +5279,32 @@ def debug_candidate(candidate_id: str):
 async def get_evaluation_results(
     candidate_id: Optional[str] = None,
     job_id: Optional[str] = None,
-    result_type: Optional[str] = None
+    result_type: Optional[str] = None,
+    company_id: Optional[str] = None
 ):
-    """Get saved evaluation or debate results"""
+    """Get saved evaluation or debate results, optionally filtered by company_id"""
     try:
         db = SessionLocal()
         query = db.query(EvaluationResultDB)
+        
+        # Filter by company_id if provided (multi-portal isolation)
+        # Results belong to a company through the candidate's submitted_by_company_id or job's company_id
+        if company_id:
+            # Get candidates for this company
+            candidate_subquery = db.query(CandidateDB.id).filter(
+                CandidateDB.submitted_by_company_id == company_id
+            ).subquery()
+            # Get jobs for this company
+            job_subquery = db.query(JobPostingDB.id).filter(
+                JobPostingDB.company_id == company_id
+            ).subquery()
+            # Filter results that belong to candidates or jobs from this company
+            query = query.filter(
+                or_(
+                    EvaluationResultDB.candidate_id.in_(candidate_subquery),
+                    EvaluationResultDB.job_id.in_(job_subquery)
+                )
+            )
         
         if candidate_id:
             query = query.filter(EvaluationResultDB.candidate_id == candidate_id)
@@ -4041,6 +5638,180 @@ async def create_company(
     except Exception as e:
         print(f"Error creating company: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to create company: {str(e)}")
+
+# -----------------------------
+# Recruiter Portal Endpoints
+# -----------------------------
+
+@app.get("/recruiter/vacancies")
+async def get_recruiter_vacancies(
+    include_new: bool = Query(False, description="Include new vacancies not yet assigned"),
+    current_user: UserDB = Depends(require_role(["admin", "recruiter"]))
+):
+    """Get vacancies assigned to the current recruiter, optionally include new vacancies"""
+    try:
+        import json
+        db = SessionLocal()
+        
+        # Get vacancies assigned to this recruiter
+        assigned_query = db.query(JobPostingDB).filter(JobPostingDB.assigned_agency_id == current_user.id)
+        assigned_jobs = assigned_query.all()
+        
+        result = []
+        assigned_job_ids = set()
+        
+        for job in assigned_jobs:
+            assigned_job_ids.add(job.id)
+            # Count candidates submitted by this recruiter for each vacancy
+            candidates_count = db.query(CandidateDB).filter(
+                CandidateDB.job_id == job.id,
+                CandidateDB.submitted_by_company_id == current_user.company_id
+            ).count()
+            
+            result.append({
+                "id": job.id,
+                "title": job.title,
+                "company": job.company,
+                "description": job.description,
+                "requirements": job.requirements,
+                "location": job.location,
+                "salary_range": job.salary_range,
+                "created_at": job.created_at.isoformat() if job.created_at else None,
+                "is_active": job.is_active if hasattr(job, 'is_active') else True,
+                "assigned_agency_id": job.assigned_agency_id,
+                "is_assigned": True,
+                "candidates_count": candidates_count,
+                "company_id": job.company_id if hasattr(job, 'company_id') else None
+            })
+        
+        # If requested, also include new vacancies not yet assigned
+        if include_new:
+            # Get all active vacancies that are not assigned to this recruiter
+            # Exclude vacancies from the recruiter's own company
+            all_vacancies_query = db.query(JobPostingDB).filter(
+                JobPostingDB.assigned_agency_id.is_(None)
+            )
+            # Only filter by company_id if it's not None
+            if current_user.company_id:
+                all_vacancies_query = all_vacancies_query.filter(JobPostingDB.company_id != current_user.company_id)  # Don't show own company's vacancies
+            if hasattr(JobPostingDB, 'is_active'):
+                all_vacancies_query = all_vacancies_query.filter(JobPostingDB.is_active == True)
+            
+            new_vacancies = all_vacancies_query.all()
+            
+            for job in new_vacancies:
+                if job.id not in assigned_job_ids:
+                    result.append({
+                        "id": job.id,
+                        "title": job.title,
+                        "company": job.company,
+                        "description": job.description,
+                        "requirements": job.requirements,
+                        "location": job.location,
+                        "salary_range": job.salary_range,
+                        "created_at": job.created_at.isoformat() if job.created_at else None,
+                        "is_active": job.is_active if hasattr(job, 'is_active') else True,
+                        "assigned_agency_id": None,
+                        "is_assigned": False,
+                        "candidates_count": 0,
+                        "company_id": job.company_id if hasattr(job, 'company_id') else None
+                    })
+        
+        # Sort by created_at descending (newest first), handle None values
+        result.sort(key=lambda x: x.get("created_at") or "", reverse=True)
+        
+        db.close()
+        
+        return {
+            "success": True,
+            "vacancies": result
+        }
+    except Exception as e:
+        print(f"Error getting recruiter vacancies: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get recruiter vacancies: {str(e)}")
+
+@app.get("/recruiter/candidates")
+async def get_recruiter_candidates(job_id: Optional[str] = None, current_user: UserDB = Depends(require_role(["admin", "recruiter"]))):
+    """Get candidates submitted by the current recruiter"""
+    try:
+        db = SessionLocal()
+        
+        # Get candidates submitted by this recruiter's company
+        query = db.query(CandidateDB).filter(CandidateDB.submitted_by_company_id == current_user.company_id)
+        
+        if job_id:
+            query = query.filter(CandidateDB.job_id == job_id)
+        
+        candidates = query.all()
+        
+        result = []
+        for candidate in candidates:
+            # Parse JSON fields
+            skill_tags = None
+            if candidate.skill_tags:
+                try:
+                    import json
+                    skill_tags = json.loads(candidate.skill_tags) if isinstance(candidate.skill_tags, str) else candidate.skill_tags
+                except:
+                    skill_tags = candidate.skill_tags
+            
+            result.append({
+                "id": candidate.id,
+                "name": candidate.name,
+                "email": candidate.email,
+                "job_id": candidate.job_id,
+                "created_at": candidate.created_at.isoformat() if candidate.created_at else None,
+                "pipeline_stage": candidate.pipeline_stage,
+                "pipeline_status": candidate.pipeline_status,
+                "skill_tags": skill_tags
+            })
+        
+        db.close()
+        
+        return {
+            "success": True,
+            "candidates": result
+        }
+    except Exception as e:
+        print(f"Error getting recruiter candidates: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get recruiter candidates: {str(e)}")
+
+@app.post("/recruiter/workspaces/assign")
+async def assign_workspace(
+    job_id: str = Form(...),
+    recruiter_id: str = Form(...),
+    current_user: UserDB = Depends(require_role(["admin"]))
+):
+    """Assign a vacancy (workspace) to a recruiter (admin only)"""
+    try:
+        db = SessionLocal()
+        
+        # Verify job exists
+        job = db.query(JobPostingDB).filter(JobPostingDB.id == job_id).first()
+        if not job:
+            db.close()
+            raise HTTPException(status_code=404, detail="Vacancy not found")
+        
+        # Verify recruiter exists and has recruiter role
+        recruiter = db.query(UserDB).filter(UserDB.id == recruiter_id, UserDB.role == "recruiter").first()
+        if not recruiter:
+            db.close()
+            raise HTTPException(status_code=404, detail="Recruiter not found")
+        
+        # Assign vacancy to recruiter
+        job.assigned_agency_id = recruiter_id
+        db.commit()
+        db.close()
+        
+        return {
+            "success": True,
+            "message": f"Vacancy '{job.title}' assigned to recruiter '{recruiter.name}'"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error assigning workspace: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to assign workspace: {str(e)}")
 
 # -----------------------------
 # Notification Endpoints
@@ -4839,18 +6610,12 @@ async def match_candidates_to_job(job_id: str = Form(...), limit: Optional[int] 
             }
         
         # Prepare job information
-        job_info = f"""
-VACATURE: {job.title}
-BEDRIJF: {job.company}
-LOCATIE: {job.location}
-SALARIS: {job.salary_range}
-
-BESCHRIJVING:
-{truncate_text_safely(job.description, 1500)}
-
-EISEN:
-{truncate_text_safely(job.requirements, 1500)}
-"""
+        job_info = (f"VACATURE: {job.title}\n"
+                   f"BEDRIJF: {job.company}\n"
+                   f"LOCATIE: {job.location}\n"
+                   f"SALARIS: {job.salary_range}\n\n"
+                   f"BESCHRIJVING:\n{truncate_text_safely(job.description, 1500)}\n\n"
+                   f"EISEN:\n{truncate_text_safely(job.requirements, 1500)}")
         
         # Match each candidate using AI
         matches = []
@@ -4858,19 +6623,13 @@ EISEN:
         
         for candidate in candidates:
             # Prepare candidate information
-            candidate_info = f"""
-KANDIDAAT: {candidate.name}
-EMAIL: {candidate.email or 'Niet opgegeven'}
-ERVARING: {candidate.experience_years or 'Niet opgegeven'} jaar
-VAARDIGHEDEN: {candidate.skills or 'Niet opgegeven'}
-OPLEIDING: {candidate.education or 'Niet opgegeven'}
-
-CV:
-{truncate_text_safely(candidate.resume_text or '', 1500)}
-
-MOTIVATIEBRIEF:
-{truncate_text_safely(candidate.motivational_letter or '', 1000)}
-"""
+            candidate_info = (f"KANDIDAAT: {candidate.name}\n"
+                            f"EMAIL: {candidate.email or 'Niet opgegeven'}\n"
+                            f"ERVARING: {candidate.experience_years or 'Niet opgegeven'} jaar\n"
+                            f"VAARDIGHEDEN: {candidate.skills or 'Niet opgegeven'}\n"
+                            f"OPLEIDING: {candidate.education or 'Niet opgegeven'}\n\n"
+                            f"CV:\n{truncate_text_safely(candidate.resume_text or '', 1500)}\n\n"
+                            f"MOTIVATIEBRIEF:\n{truncate_text_safely(candidate.motivational_letter or '', 1000)}")
             
             if candidate.company_note:
                 candidate_info += f"\nBEDRIJFSNOTITIE (van leverancier):\n{truncate_text_safely(candidate.company_note, 500)}\n"
@@ -4902,34 +6661,18 @@ MOTIVATIEBRIEF:
             avg_score = sum(evaluation_scores) / len(evaluation_scores) if evaluation_scores else None
             
             # Create matching prompt
-            system_prompt = """Je bent een expert HR-matcher. Je taak is om te beoordelen hoe goed een kandidaat matcht met een vacature.
+            system_prompt = ("Je bent een expert HR-matcher. Je taak is om te beoordelen hoe goed een kandidaat matcht met een vacature.\n\n"
+                            "Geef een match score van 1-10, waarbij:\n"
+                            "- 1-3: Zeer slechte match (kandidaat voldoet niet aan basisvereisten)\n"
+                            "- 4-5: Zwakke match (kandidaat voldoet aan enkele vereisten maar mist belangrijke aspecten)\n"
+                            "- 6-7: Goede match (kandidaat voldoet aan de meeste vereisten)\n"
+                            "- 8-9: Uitstekende match (kandidaat voldoet aan vrijwel alle vereisten en heeft extra kwaliteiten)\n"
+                            "- 10: Perfecte match (kandidaat is ideaal voor deze functie)\n\n"
+                            "Geef ook een korte motivatie (2-3 zinnen) waarom deze score is gegeven.\n\n"
+                            "Antwoord in JSON formaat met match_score (1-10), reasoning, strengths en concerns.")
 
-Geef een match score van 1-10, waarbij:
-- 1-3: Zeer slechte match (kandidaat voldoet niet aan basisvereisten)
-- 4-5: Zwakke match (kandidaat voldoet aan enkele vereisten maar mist belangrijke aspecten)
-- 6-7: Goede match (kandidaat voldoet aan de meeste vereisten)
-- 8-9: Uitstekende match (kandidaat voldoet aan vrijwel alle vereisten en heeft extra kwaliteiten)
-- 10: Perfecte match (kandidaat is ideaal voor deze functie)
-
-Geef ook een korte motivatie (2-3 zinnen) waarom deze score is gegeven.
-
-Antwoord in JSON formaat:
-{
-  "match_score": <score 1-10>,
-  "reasoning": "<korte motivatie in het Nederlands>",
-  "strengths": ["<sterk punt 1>", "<sterk punt 2>", ...],
-  "concerns": ["<aandachtspunt 1>", "<aandachtspunt 2>", ...]
-}"""
-
-            user_prompt = f"""VACATURE:
-{job_info}
-
-KANDIDAAT:
-{candidate_info}
-
-{f"BESTAANDE EVALUATIES: Gemiddelde score: {avg_score:.1f}/10" if avg_score else ""}
-
-Beoordeel hoe goed deze kandidaat matcht met deze vacature. Geef een match score en motivatie."""
+            eval_info = f"\nBESTAANDE EVALUATIES: Gemiddelde score: {avg_score:.1f}/10" if avg_score else ""
+            user_prompt = "VACATURE:\n" + str(job_info) + "\n\nKANDIDAAT:\n" + str(candidate_info) + "\n" + eval_info + "\n\nBeoordeel hoe goed deze kandidaat matcht met deze vacature. Geef een match score en motivatie."
 
             matching_tasks.append({
                 "candidate": candidate,
@@ -5032,6 +6775,201 @@ Beoordeel hoe goed deze kandidaat matcht met deze vacature. Geef een match score
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to match candidates: {str(e)}")
+
+# -----------------------------
+# LLM Judge Endpoint
+# -----------------------------
+
+# -----------------------------
+# LLM Judge System Endpoints
+# -----------------------------
+
+@app.post("/llm-judge/evaluate")
+async def evaluate_llm_performance(
+    result_id: str = Form(...),
+    request: Request = None
+):
+    try:
+        from llm_judge import get_judge
+        
+        db = SessionLocal()
+        result = db.query(EvaluationResultDB).filter(EvaluationResultDB.id == result_id).first()
+        
+        if not result:
+            db.close()
+            raise HTTPException(status_code=404, detail="Evaluation result not found")
+        
+        # Parse result data
+        import json
+        try:
+            result_data = json.loads(result.result_data) if isinstance(result.result_data, str) else result.result_data
+        except:
+            result_data = {'debate': str(result.result_data), 'evaluations': {}}
+        
+        # Get timing data if available
+        timing_data = result_data.get('timing_data', {})
+        if not timing_data:
+            # Fallback: create basic timing if not available
+            timing_data = {
+                'total': 0,
+                'duration': 0
+            }
+        
+        # Prepare input data for judge
+        personas_list = []
+        if result.selected_personas:
+            try:
+                personas_list = json.loads(result.selected_personas) if isinstance(result.selected_personas, str) else result.selected_personas
+            except:
+                personas_list = []
+        
+        input_data = {
+            'candidate_id': result.candidate_id or '',
+            'job_id': result.job_id or '',
+            'personas': personas_list if isinstance(personas_list, list) else [],
+            'company_note': result.company_note or ''
+        }
+        
+        # Get output (debate or evaluation)
+        output = ''
+        if result.result_type == 'debate':
+            output = result_data.get('debate', '') or result_data.get('transcript', '') or ''
+        else:
+            # For evaluation, combine all evaluations into text
+            evaluations = result_data.get('evaluations', {})
+            if evaluations:
+                output = json.dumps(evaluations, ensure_ascii=False)
+            else:
+                output = str(result_data)
+        
+        # Ensure output is a string
+        if not isinstance(output, str):
+            output = json.dumps(output, ensure_ascii=False)
+        
+        # Get historical outputs for comparison (to check if similar inputs yield similar outputs)
+        historical_results = db.query(EvaluationResultDB).filter(
+            EvaluationResultDB.candidate_id == result.candidate_id,
+            EvaluationResultDB.id != result.id,
+            EvaluationResultDB.result_type == result.result_type
+        ).limit(10).all()
+        
+        historical_outputs = []
+        for hist in historical_results:
+            try:
+                hist_data = json.loads(hist.result_data) if isinstance(hist.result_data, str) else hist.result_data
+                
+                hist_personas = []
+                if hist.selected_personas:
+                    try:
+                        hist_personas = json.loads(hist.selected_personas) if isinstance(hist.selected_personas, str) else hist.selected_personas
+                    except:
+                        hist_personas = []
+                
+                hist_output = ''
+                if hist.result_type == 'debate':
+                    hist_output = hist_data.get('debate', '') or hist_data.get('transcript', '') or ''
+                else:
+                    hist_evaluations = hist_data.get('evaluations', {})
+                    if hist_evaluations:
+                        hist_output = json.dumps(hist_evaluations, ensure_ascii=False)
+                
+                if hist_output:
+                    historical_outputs.append({
+                        'input': {
+                            'candidate_id': hist.candidate_id or '',
+                            'job_id': hist.job_id or '',
+                            'personas': hist_personas if isinstance(hist_personas, list) else [],
+                            'company_note': hist.company_note or ''
+                        },
+                        'output': hist_output
+                    })
+            except Exception as e:
+                print(f"Error processing historical result {hist.id}: {e}")
+                continue
+        
+        # Get judge instance and evaluate
+        judge = get_judge()
+        evaluation = judge.judge_llm_performance(
+            input_data=input_data,
+            output=output,
+            timing=timing_data,
+            historical_outputs=historical_outputs
+        )
+        
+        db.close()
+        
+        return {
+            "success": True,
+            "evaluation": evaluation
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Judge evaluation failed: {str(e)}")
+
+
+@app.post("/llm-settings/truncation")
+async def update_truncation_settings(
+    disable_truncation: bool = Form(False),
+    prompt_density_multiplier: float = Form(1.0)
+):
+    try:
+        from llm_judge import get_judge
+        
+        # Update judge settings
+        judge = get_judge()
+        judge.update_settings(
+            truncation_enabled=not disable_truncation,
+            prompt_density_multiplier=prompt_density_multiplier
+        )
+        
+        # In production, store these in database or config file
+        # For now, they're stored in memory in the judge instance
+        
+        return {
+            "success": True,
+            "settings": {
+                "truncation_disabled": disable_truncation,
+                "truncation_enabled": not disable_truncation,
+                "prompt_density_multiplier": prompt_density_multiplier
+            },
+            "message": "Instellingen bijgewerkt"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update settings: {str(e)}")
+
+
+@app.get("/llm-settings")
+async def get_llm_settings():
+    pass  # Get current LLM settings
+    try:
+        from config import (
+            OPENAI_MAX_TOKENS_EVALUATION,
+            OPENAI_MAX_TOKENS_DEBATE,
+            OPENAI_MAX_TOKENS_JOB_ANALYSIS
+        )
+        from llm_judge import get_judge
+        
+        # Get current settings from judge
+        judge = get_judge()
+        judge_settings = judge.settings
+        
+        return {
+            "success": True,
+            "settings": {
+                "max_tokens_evaluation": OPENAI_MAX_TOKENS_EVALUATION,
+                "max_tokens_debate": OPENAI_MAX_TOKENS_DEBATE,
+                "max_tokens_job_analysis": OPENAI_MAX_TOKENS_JOB_ANALYSIS,
+                "truncation_enabled": judge_settings.get('truncation_enabled', True),
+                "truncation_disabled": not judge_settings.get('truncation_enabled', True),
+                "prompt_density_multiplier": judge_settings.get('prompt_density_multiplier', 1.0)
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get settings: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn

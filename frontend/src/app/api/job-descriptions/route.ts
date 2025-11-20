@@ -4,11 +4,35 @@ const BACKEND_URL = process.env.BACKEND_URL || process.env.NEXT_PUBLIC_BACKEND_U
 
 export async function GET(request: NextRequest) {
   try {
-    const response = await fetch(`${BACKEND_URL}/job-descriptions`, {
+    const searchParams = request.nextUrl.searchParams;
+    const companyId = searchParams.get('company_id');
+    
+    // Get authorization header from request (client sends it in headers)
+    const authHeader = request.headers.get('authorization');
+    
+    let url = `${BACKEND_URL}/job-descriptions`;
+    if (companyId) {
+      url += `?company_id=${companyId}`;
+    }
+    
+    // Build headers - include auth if present
+    const headers: HeadersInit = {
+      'Content-Type': 'application/json',
+    };
+    if (authHeader) {
+      headers['Authorization'] = authHeader;
+    }
+    
+    // Also try to get token from cookies as fallback (if client stores it there)
+    const cookies = request.cookies;
+    const tokenFromCookie = cookies.get('auth_token')?.value;
+    if (!authHeader && tokenFromCookie) {
+      headers['Authorization'] = `Bearer ${tokenFromCookie}`;
+    }
+    
+    const response = await fetch(url, {
       method: 'GET',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers,
     });
 
     if (!response.ok) {

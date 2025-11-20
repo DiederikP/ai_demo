@@ -7,6 +7,7 @@ interface Persona {
   name: string;
   display_name: string;
   system_prompt: string;
+  personal_criteria?: string | string[] | null;  // Optional personal criteria (user-defined, set once)
   is_active: boolean;
   created_at: string;
 }
@@ -22,11 +23,21 @@ export default function PersonaManager({ personas, onPersonasChange }: PersonaMa
   const [formData, setFormData] = useState({
     name: '',
     display_name: '',
-    system_prompt: ''
+    system_prompt: '',
+    personal_criteria: ''  // Plain text input, will be converted to JSON
   });
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    
+    // Convert personal_criteria text to JSON array (one criteria per line)
+    let personalCriteriaJson: string[] | null = null;
+    if (formData.personal_criteria && formData.personal_criteria.trim()) {
+      personalCriteriaJson = formData.personal_criteria
+        .split('\n')
+        .map(line => line.trim())
+        .filter(line => line.length > 0);
+    }
     
     try {
       const response = await fetch('/api/personas', {
@@ -34,6 +45,7 @@ export default function PersonaManager({ personas, onPersonasChange }: PersonaMa
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ...formData,
+          personal_criteria: personalCriteriaJson,
           ...(editingPersona && { id: editingPersona.id })
         })
       });
@@ -42,7 +54,7 @@ export default function PersonaManager({ personas, onPersonasChange }: PersonaMa
         onPersonasChange();
         setIsOpen(false);
         setEditingPersona(null);
-        setFormData({ name: '', display_name: '', system_prompt: '' });
+        setFormData({ name: '', display_name: '', system_prompt: '', personal_criteria: '' });
       }
     } catch (error) {
       console.error('Error saving persona:', error);
@@ -64,10 +76,34 @@ export default function PersonaManager({ personas, onPersonasChange }: PersonaMa
 
   const handleEdit = (persona: Persona) => {
     setEditingPersona(persona);
+    
+    // Convert personal_criteria from JSON to plain text (one per line)
+    let personalCriteriaText = '';
+    if (persona.personal_criteria) {
+      try {
+        const criteriaData = typeof persona.personal_criteria === 'string' 
+          ? JSON.parse(persona.personal_criteria)
+          : persona.personal_criteria;
+        
+        if (Array.isArray(criteriaData)) {
+          personalCriteriaText = criteriaData.join('\n');
+        } else if (typeof criteriaData === 'object') {
+          personalCriteriaText = Object.values(criteriaData).join('\n');
+        } else {
+          personalCriteriaText = String(criteriaData);
+        }
+      } catch {
+        personalCriteriaText = typeof persona.personal_criteria === 'string' 
+          ? persona.personal_criteria 
+          : '';
+      }
+    }
+    
     setFormData({
       name: persona.name,
       display_name: persona.display_name,
-      system_prompt: persona.system_prompt
+      system_prompt: persona.system_prompt,
+      personal_criteria: personalCriteriaText
     });
     setIsOpen(true);
   };
@@ -88,7 +124,7 @@ export default function PersonaManager({ personas, onPersonasChange }: PersonaMa
             if (e.target === e.currentTarget) {
               setIsOpen(false);
               setEditingPersona(null);
-              setFormData({ name: '', display_name: '', system_prompt: '' });
+              setFormData({ name: '', display_name: '', system_prompt: '', personal_criteria: '' });
             }
           }}
         >
@@ -140,6 +176,26 @@ export default function PersonaManager({ personas, onPersonasChange }: PersonaMa
                 />
               </div>
               
+              {/* Personal Criteria Section */}
+              <div className="p-4 bg-amber-50 rounded-lg border border-amber-200">
+                <label className="block text-sm font-medium mb-2 text-barnes-dark-violet">
+                  Persoonlijke Evaluatiecriteria (Optioneel - Eenmalig instelbaar)
+                </label>
+                <p className="text-xs text-barnes-dark-gray mb-3">
+                  Voeg aangepaste evaluatiecriteria toe die specifiek zijn voor deze digitale werknemer. Deze worden gebruikt naast de standaard evaluatiepunten. Één criterium per regel.
+                </p>
+                <textarea
+                  rows={4}
+                  value={formData.personal_criteria}
+                  onChange={(e) => setFormData({ ...formData, personal_criteria: e.target.value })}
+                  className="input-field"
+                  placeholder="bijv.:&#10;- Focus op internationale ervaring&#10;- Sterke voorkeur voor agile methodologie&#10;- Minimale 5 jaar leiderschapservaring"
+                />
+                <p className="text-xs text-gray-500 mt-2">
+                  Tip: Geef één criterium per regel. Deze criteria worden actief gebruikt in evaluaties.
+                </p>
+              </div>
+              
               <div className="flex gap-4 pt-4">
                 <button type="submit" className="btn-primary flex-1">
                   {editingPersona ? 'Update Persona' : 'Create Persona'}
@@ -149,7 +205,7 @@ export default function PersonaManager({ personas, onPersonasChange }: PersonaMa
                   onClick={() => {
                     setIsOpen(false);
                     setEditingPersona(null);
-                    setFormData({ name: '', display_name: '', system_prompt: '' });
+                    setFormData({ name: '', display_name: '', system_prompt: '', personal_criteria: '' });
                   }}
                   className="btn-secondary flex-1"
                 >

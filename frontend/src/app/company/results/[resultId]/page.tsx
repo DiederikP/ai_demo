@@ -3,7 +3,9 @@
 import { useState, useEffect } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
+import ProtectedRoute from '../../../../components/ProtectedRoute';
 import CompanyNavigation from '../../../../components/CompanyNavigation';
+import LLMJudge from '../../../../components/LLMJudge';
 
 interface EvaluationResult {
   id: string;
@@ -35,7 +37,7 @@ export default function ResultDetailPage() {
   const [relatedResults, setRelatedResults] = useState<EvaluationResult[]>([]);
   const [personas, setPersonas] = useState<Persona[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<'current' | 'evaluation' | 'debate'>('current');
+  const [activeTab, setActiveTab] = useState<'evaluation' | 'debate' | 'judge'>('evaluation');
 
   useEffect(() => {
     loadResult();
@@ -111,13 +113,12 @@ export default function ResultDetailPage() {
         const allResults = (data.results || []).filter((r: EvaluationResult) => r.id !== result.id);
         setRelatedResults(allResults);
         
-        // Set active tab based on current result type
-        if (result.result_type === 'evaluation') {
-          const hasDebate = allResults.some((r: EvaluationResult) => r.result_type === 'debate');
-          if (hasDebate) setActiveTab('evaluation');
-        } else if (result.result_type === 'debate') {
-          const hasEvaluation = allResults.some((r: EvaluationResult) => r.result_type === 'evaluation');
-          if (hasEvaluation) setActiveTab('debate');
+        // Always default to evaluation tab if available, otherwise debate
+        const hasEvaluation = result.result_type === 'evaluation' || allResults.some((r: EvaluationResult) => r.result_type === 'evaluation');
+        if (hasEvaluation) {
+          setActiveTab('evaluation');
+        } else {
+          setActiveTab('debate');
         }
       }
     } catch (error) {
@@ -149,7 +150,7 @@ export default function ResultDetailPage() {
           router.push(`/company/dashboard?module=${module}`);
         }
       }} />
-      <div className="md:ml-64 p-4 md:p-8">
+      <div className="p-4 md:p-8 transition-all duration-300" style={{ marginLeft: 'var(--nav-width, 16rem)' }}>
         <div className="max-w-7xl mx-auto">
           <div className="mb-8">
             <div className="flex items-center justify-between mb-4">
@@ -202,34 +203,54 @@ export default function ResultDetailPage() {
               {result.result_type === 'evaluation' ? 'Evaluatie Resultaat' : 'Expert Debat Resultaat'}
             </h1>
             
-            {/* Tabs for related results */}
-            {(relatedResults.length > 0 && (
-              relatedResults.some(r => r.result_type === 'evaluation') && 
-              relatedResults.some(r => r.result_type === 'debate')
-            )) && (
-              <div className="flex gap-2 mt-4 border-b border-gray-200">
-                <button
-                  onClick={() => setActiveTab('evaluation')}
-                  className={`px-4 py-2 font-medium transition-colors ${
-                    activeTab === 'evaluation'
-                      ? 'text-barnes-violet border-b-2 border-barnes-violet'
-                      : 'text-barnes-dark-gray hover:text-barnes-violet'
-                  }`}
-                >
-                  Evaluatie
-                </button>
-                <button
-                  onClick={() => setActiveTab('debate')}
-                  className={`px-4 py-2 font-medium transition-colors ${
-                    activeTab === 'debate'
-                      ? 'text-barnes-violet border-b-2 border-barnes-violet'
-                      : 'text-barnes-dark-gray hover:text-barnes-violet'
-                  }`}
-                >
-                  Debat
-                </button>
-              </div>
-            )}
+            {/* Tabs - Evaluation, Debate, and LLM Judge */}
+            {(() => {
+              const hasEvaluation = result.result_type === 'evaluation' || relatedResults.some(r => r.result_type === 'evaluation');
+              const hasDebate = result.result_type === 'debate' || relatedResults.some(r => r.result_type === 'debate');
+              
+              // Always show tabs if we have evaluation or debate (judge is always available)
+              if (hasEvaluation || hasDebate) {
+                return (
+                  <div className="flex gap-2 mt-4 border-b border-gray-200">
+                    {hasEvaluation && (
+                      <button
+                        onClick={() => setActiveTab('evaluation')}
+                        className={`px-4 py-2 font-medium transition-colors ${
+                          activeTab === 'evaluation'
+                            ? 'text-barnes-violet border-b-2 border-barnes-violet'
+                            : 'text-barnes-dark-gray hover:text-barnes-violet'
+                        }`}
+                      >
+                        Evaluatie
+                      </button>
+                    )}
+                    {hasDebate && (
+                      <button
+                        onClick={() => setActiveTab('debate')}
+                        className={`px-4 py-2 font-medium transition-colors ${
+                          activeTab === 'debate'
+                            ? 'text-barnes-violet border-b-2 border-barnes-violet'
+                            : 'text-barnes-dark-gray hover:text-barnes-violet'
+                        }`}
+                      >
+                        Debat
+                      </button>
+                    )}
+                    <button
+                      onClick={() => setActiveTab('judge')}
+                      className={`px-4 py-2 font-medium transition-colors ${
+                        activeTab === 'judge'
+                          ? 'text-barnes-violet border-b-2 border-barnes-violet'
+                          : 'text-barnes-dark-gray hover:text-barnes-violet'
+                      }`}
+                    >
+                      LLM Judge
+                    </button>
+                  </div>
+                );
+              }
+              return null;
+            })()}
             <p className="text-barnes-dark-gray text-lg">
               {result.candidate_name || 'Kandidaat'} - {result.job_title || 'Vacature'}
             </p>
@@ -244,15 +265,28 @@ export default function ResultDetailPage() {
             </p>
           </div>
 
-      {/* Show current result or switch based on tab */}
+      {/* Show current result or switch based on tab - Evaluation is main view, Debate is tab inside */}
       {(() => {
         let displayResult = result;
-        if (activeTab === 'evaluation' && relatedResults.length > 0) {
-          const evalResult = relatedResults.find(r => r.result_type === 'evaluation') || result;
-          displayResult = evalResult;
-        } else if (activeTab === 'debate' && relatedResults.length > 0) {
-          const debateResult = relatedResults.find(r => r.result_type === 'debate') || result;
-          displayResult = debateResult;
+        if (activeTab === 'evaluation') {
+          // Show evaluation result (current if evaluation, or find related evaluation)
+          if (result.result_type === 'evaluation') {
+            displayResult = result;
+          } else {
+            const evalResult = relatedResults.find(r => r.result_type === 'evaluation');
+            if (evalResult) displayResult = evalResult;
+          }
+        } else if (activeTab === 'debate') {
+          // Show debate result (current if debate, or find related debate)
+          if (result.result_type === 'debate') {
+            displayResult = result;
+          } else {
+            const debateResult = relatedResults.find(r => r.result_type === 'debate');
+            if (debateResult) displayResult = debateResult;
+          }
+        } else if (activeTab === 'judge') {
+          // Show LLM Judge - use current result (either evaluation or debate)
+          displayResult = result;
         }
         
         if (displayResult?.result_type === 'evaluation' && displayResult.result_data?.evaluations) {
@@ -380,17 +414,73 @@ export default function ResultDetailPage() {
             </div>
           );
         }
+        
+        // Show debate if activeTab is debate
+        if (activeTab === 'debate') {
+          if (displayResult?.result_type === 'debate' && displayResult.result_data?.debate) {
+            return (
+              <DebateView 
+                resultId={displayResult.id}
+                debate={displayResult.result_data.debate} 
+                fullPrompt={displayResult.result_data.full_prompt}
+                companyNote={displayResult.company_note}
+                selectedPersonas={Array.isArray(displayResult.selected_personas) ? displayResult.selected_personas : []}
+                personas={personas}
+              />
+            );
+          }
+          // Also check related results for debate
+          const debateResult = relatedResults.find(r => r.result_type === 'debate');
+          if (debateResult?.result_data?.debate) {
+            return (
+              <DebateView 
+                resultId={debateResult.id}
+                debate={debateResult.result_data.debate} 
+                fullPrompt={debateResult.result_data.full_prompt}
+                companyNote={debateResult.company_note}
+                selectedPersonas={Array.isArray(debateResult.selected_personas) ? debateResult.selected_personas : []}
+                personas={personas}
+              />
+            );
+          }
+        }
+        
         return null;
       })()}
 
+      {/* Render content based on active tab */}
       {(() => {
+        // LLM Judge Tab
+        if (activeTab === 'judge') {
+          return (
+            <div className="space-y-8">
+              <div className="bg-white rounded-2xl border border-gray-200 p-6 shadow-sm">
+                <h2 className="text-2xl font-semibold text-barnes-dark-violet mb-4">LLM Judge</h2>
+                <p className="text-barnes-dark-gray mb-6">
+                  Beoordeelt de performance van de digitale werknemers (agents), niet de kandidaat evaluatie. De judge analyseert hoe goed de agents hebben gefunctioneerd, toont hoe vergelijkbare inputs vergelijkbare outputs geven, en geeft aanbevelingen voor verbetering van de agent performance.
+                </p>
+                <LLMJudge resultId={resultId} />
+              </div>
+            </div>
+          );
+        }
+        
+        // Evaluation and Debate Tabs
         let displayResult = result;
-        if (activeTab === 'evaluation' && relatedResults.length > 0) {
-          const evalResult = relatedResults.find(r => r.result_type === 'evaluation') || result;
-          displayResult = evalResult;
-        } else if (activeTab === 'debate' && relatedResults.length > 0) {
-          const debateResult = relatedResults.find(r => r.result_type === 'debate') || result;
-          displayResult = debateResult;
+        if (activeTab === 'evaluation') {
+          if (result.result_type === 'evaluation') {
+            displayResult = result;
+          } else {
+            const evalResult = relatedResults.find(r => r.result_type === 'evaluation');
+            if (evalResult) displayResult = evalResult;
+          }
+        } else if (activeTab === 'debate') {
+          if (result.result_type === 'debate') {
+            displayResult = result;
+          } else {
+            const debateResult = relatedResults.find(r => r.result_type === 'debate');
+            if (debateResult) displayResult = debateResult;
+          }
         }
         
         if (displayResult?.result_type === 'debate' && displayResult.result_data?.debate) {
@@ -405,6 +495,8 @@ export default function ResultDetailPage() {
             />
           );
         }
+        
+        // Evaluation view (already handled above in the first block)
         return null;
       })()}
         </div>

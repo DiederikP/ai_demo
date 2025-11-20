@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+const BACKEND_URL = process.env.BACKEND_URL || process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+
 export async function POST(request: NextRequest) {
   try {
     const { url } = await request.json();
@@ -12,7 +14,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Proxy to backend
-    const response = await fetch('http://localhost:8000/extract-job-from-url', {
+    const response = await fetch(`${BACKEND_URL}/extract-job-from-url`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url: url.trim() })

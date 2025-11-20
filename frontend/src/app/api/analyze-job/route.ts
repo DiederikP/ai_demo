@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+const BACKEND_URL = process.env.BACKEND_URL || process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
@@ -25,7 +27,7 @@ export async function POST(request: NextRequest) {
     
     console.log('Frontend API route - FormData job_id:', formData.get('job_id'));
 
-    const backendResponse = await fetch('http://localhost:8000/analyze-job', {
+    const backendResponse = await fetch(`${BACKEND_URL}/analyze-job`, {
       method: 'POST',
       body: formData,
     });

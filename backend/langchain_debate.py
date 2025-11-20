@@ -5,10 +5,11 @@ Structured turn-based debate with JSON output format
 
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple, Any
 import os
 import json
 import asyncio
+import time
 
 # Import config
 try:
@@ -34,6 +35,16 @@ BEDRIJFSNOTITIE (Context - gebruik maar herhaal NIET):
 - Verwijs hooguit kort ("zoals eerder besproken") maar ga direct verder met andere aspecten
 - Focus op nieuwe perspectieven: technische vaardigheden, ervaring, risico's, conclusies"""
     
+    # Add persona-specific focus instruction based on persona name
+    persona_name_lower = persona_name.lower()
+    focus_instruction = ""
+    if 'tech' in persona_name_lower or 'hiring' in persona_name_lower:
+        focus_instruction = "\n**FOCUS**: Bespreek alleen technische vaardigheden, ervaring, certificeringen, testresultaten, en opleiding. Laat financiële aspecten (salaris) en HR-aspecten (motivatie, bron) aan anderen."
+    elif 'finance' in persona_name_lower:
+        focus_instruction = "\n**FOCUS**: Bespreek alleen financiële aspecten: salarisverwachting, beschikbaarheid, opzegtermijn. Laat technische vaardigheden en HR-aspecten aan anderen."
+    elif 'hr' in persona_name_lower or 'recruiter' in persona_name_lower or 'bureau' in persona_name_lower:
+        focus_instruction = "\n**FOCUS**: Bespreek motivatie, communicatie, locatie, beschikbaarheid, opzegtermijn, bron. Laat technische vaardigheden aan de tech lead/hiring manager en financiële aspecten aan de finance director."
+    
     system_prompt = f"""Je bent {persona_name}, een expert beoordelaar die een kandidaat evalueert voor een functie.
 
 Je rol en perspectief:
@@ -55,7 +66,7 @@ KRITIEKE INSTRUCTIES:
 7. Geef GEEN scores, evaluaties, of formele beoordelingen - alleen discussie
 8. Geef GEEN "Sterke punten" of "Aandachtspunten" - alleen zakelijke dialoog
 9. Voeg nieuwe perspectieven toe of trek conclusies - geen herhaling
-10. Focus op feiten, risico's, en beslissingscriteria - geen small talk
+10. Focus op feiten, risico's, en beslissingscriteria - geen small talk{focus_instruction}
 
 Je spreekt als {persona_name} - zakelijk, direct, informatiedicht."""
     
@@ -93,13 +104,20 @@ FUNCTIE: {job_info[:200]}...{company_note_text}"""
     else:
         system_prompt = f"""Je bent de moderator van een gestructureerd debat tussen {len(persona_names)} experts: {', '.join(persona_names)}.
 
-Jouw rol:
-- Begeleid zakelijk en direct - geen beleefdheden
-- Stel gerichte vragen (1 zin, max 2) om de discussie vooruit te helpen
-- Houd focus op eindbeslissing: afwijzen, geschikt, of verdere evaluatie
-- **KRITIEK**: Als bedrijfsnotitie-informatie (salaris, beschikbaarheid) al besproken is, stuur de discussie naar ANDERE aspecten (ervaring, vaardigheden, risico's, conclusies)
-- Geef GEEN evaluaties, scores, of samenvattingen - alleen begeleiding
-- Hoge informatiedichtheid - direct en to-the-point
+Jouw rol als moderator:
+- **Begeleid het debat actief**: Stel gerichte vragen, reageer op wat experts zeggen, stuur de discussie
+- **Faciliteer redenering**: Laat elk expert vanuit hun eigen perspectief redeneren en argumenteren
+- **Diepgaande discussie**: Verdiep belangrijke punten, vraag naar details, onderzoek tegenstrijdigheden
+- **Werk naar consensus**: Help de experts om tot een gezamenlijke conclusie te komen
+- **Houd focus**: Eindbeslissing moet zijn: afwijzen, geschikt, of verdere evaluatie nodig
+
+Belangrijke regels:
+- Geef zakelijke, directe begeleiding (1-2 zinnen)
+- Reageer op wat experts hebben gezegd door specifieke punten te benoemen
+- Stel vragen die dieper ingaan op aspecten die genoemd zijn
+- **KRITIEK**: Als bedrijfsnotitie-informatie (salaris, beschikbaarheid) al besproken is, stuur naar ANDERE aspecten
+- Voorkom herhaling - focus op nieuwe perspectieven of verdieping
+- Geef GEEN eigen evaluaties - alleen begeleiding en vragen
 
 KANDIDAAT INFORMATIE:
 {candidate_info}
@@ -110,7 +128,7 @@ FUNCTIE INFORMATIE:
 Huidige gespreksstatus:
 {{conversation_status}}
 
-Geef een korte, directe begeleiding of vraag (1 zin) die de discussie naar een beslissing leidt. Focus op aspecten die NOG NIET besproken zijn."""
+Geef een korte, directe begeleiding of vraag (1-2 zinnen) die de discussie vooruit helpt. Reageer op wat experts hebben gezegd en stuur naar verdieping of conclusie."""
     
     return ChatPromptTemplate.from_messages([
         ("system", system_prompt),
@@ -139,7 +157,15 @@ def create_orchestrator_llm() -> ChatOpenAI:
 def format_conversation_context(conversation: List[Dict[str, str]], persona_name: str, company_note: Optional[str] = None) -> str:
     """Format the conversation context for a persona to read"""
     if not conversation:
-        return "Je begint het debat. Geef je eerste indruk van de kandidaat op basis van je expertise (1-3 zinnen)."
+        # First turn - moderator has opened, personas should share their perspective
+        return f"""De moderator heeft het debat geopend. Jouw beurt ({persona_name}).
+
+De evaluatie is al gedaan. Spring direct in op specifieke aspecten vanuit jouw perspectief:
+- Welke risico's zie je?
+- Welke aspecten zijn belangrijk vanuit jouw expertise?
+- Wat zijn de belangrijkste overwegingen?
+
+Houd het kort (1-2 zinnen) en zakelijk. Geen herhaling van evaluatie-resultaten - focus op discussie."""
     
     formatted = "HUIDIG DEBAT:\n\n"
     for entry in conversation:
@@ -151,74 +177,105 @@ def format_conversation_context(conversation: List[Dict[str, str]], persona_name
     # Detect if company note topics have been discussed
     company_note_mentioned = False
     if company_note:
-        # Check if any company note keywords appear in conversation
-        note_keywords = ['salaris', 'beschikbaar', '€', 'euro', 'maand', 'week', 'opzegtermijn', 'bedrijfsnotitie', '4000', 'salarisindicatie']
+        note_keywords = ['salaris', 'beschikbaar', '€', 'euro', 'maand', 'week', 'opzegtermijn', 'bedrijfsnotitie', 'salarisindicatie']
         conversation_text = ' '.join([entry.get('content', '').lower() for entry in conversation])
         company_note_mentioned = any(keyword in conversation_text for keyword in note_keywords)
-        
-        # Also check for specific patterns from company note
-        if company_note:
-            note_lower = company_note.lower()
-            # Extract key phrases from company note
-            if 'salaris' in note_lower or '€' in note_lower:
-                if 'salaris' in conversation_text or '€' in conversation_text or 'euro' in conversation_text:
-                    company_note_mentioned = True
-            if 'beschikbaar' in note_lower or 'maand' in note_lower:
-                if 'beschikbaar' in conversation_text or 'maand' in conversation_text:
-                    company_note_mentioned = True
     
-    formatted += f"\nJe beurt ({persona_name}). Reageer zakelijk en direct op wat anderen hebben gezegd (1-2 zinnen, max 3)."
-    formatted += "\n\nBELANGRIJK:"
-    formatted += "\n- Je bespreekt de kandidaat MET experts - spreek NIET tegen de kandidaat"
+    # Get recent messages from other personas (not just moderator)
+    recent_persona_messages = []
+    for entry in reversed(conversation[-5:]):  # Look at last 5 messages
+        role = entry.get('role', '')
+        if role and role != 'Moderator' and role != persona_name.replace('_', ' ').title():
+            recent_persona_messages.append({
+                'role': role,
+                'content': entry.get('content', '')[:150]  # First 150 chars
+            })
+            if len(recent_persona_messages) >= 2:  # Get last 2 persona messages
+                break
+    
+    # Get what moderator said last
+    moderator_last_message = None
+    for entry in reversed(conversation):
+        if entry.get('role') == 'Moderator':
+            moderator_last_message = entry.get('content', '')
+            break
+    
+    display_name = persona_name.replace('_', ' ').title()
+    formatted += f"\nJouw beurt ({display_name}).\n"
+    
+    # Encourage reacting to other personas, not just moderator
+    if recent_persona_messages:
+        formatted += "\n**BELANGRIJK - Reageer op andere experts:**\n"
+        for msg in recent_persona_messages:
+            formatted += f"- {msg['role']} zei: \"{msg['content']}{'...' if len(msg['content']) >= 150 else ''}\"\n"
+        formatted += "\n**Reageer direct op wat andere experts hebben gezegd.** Noem ze bij naam, beantwoord hun vragen, of bouw voort op hun punten.\n"
+    elif moderator_last_message:
+        formatted += f"\nDe moderator vroeg/zei: \"{moderator_last_message[:100]}{'...' if len(moderator_last_message) > 100 else ''}\"\n"
+        formatted += "Reageer op de moderator's vraag, maar ook op wat andere experts hebben gezegd als dat relevant is.\n"
+    else:
+        formatted += "Reageer zakelijk en direct op wat anderen hebben gezegd.\n"
+    
+    formatted += "\nBELANGRIJK:"
+    formatted += "\n- **Reageer op andere experts**: Noem ze bij naam, beantwoord hun vragen, of bouw voort op hun punten"
+    formatted += "\n- **Dit is een gesprek**: Iedereen reageert op elkaar, niet alleen op de moderator"
+    formatted += "\n- Redeneer vanuit jouw eigen standpunt en expertise"
+    formatted += "\n- Bespreek de kandidaat MET andere experts (niet tegen de kandidaat)"
+    formatted += "\n- Houd berichten kort (1-2 zinnen, max 3)"
     formatted += "\n- Hoge informatiedichtheid: direct, zakelijk, geen beleefdheden"
+    formatted += "\n- Voeg nieuwe perspectieven toe of verdiep punten die anderen hebben gemaakt"
     
     if company_note_mentioned:
-        formatted += "\n- **KRITIEK**: Informatie uit de bedrijfsnotitie (salaris, beschikbaarheid, etc.) is AL BESPREKEN in dit debat."
-        formatted += "\n- **VERBODEN**: NOEM salaris, beschikbaarheid, opzegtermijn, of andere bedrijfsnotitie-details NIET MEER."
-        formatted += "\n- **VERPLICHT**: Focus op ANDERE aspecten: technische vaardigheden, ervaring, cultuurfit, risico's, stabiliteit, of trek conclusies."
-        formatted += "\n- Als je niets nieuws hebt, geef dan een conclusie of vraag om verduideliking over ANDERE aspecten."
+    formatted += "\n- **KRITIEK**: Bedrijfsnotitie-informatie (salaris, beschikbaarheid) is AL besproken."
+    formatted += "\n- **VERBODEN**: Noem deze details NIET MEER."
+    formatted += "\n- **VERPLICHT**: Focus op andere aspecten: vaardigheden, ervaring, risico's, conclusies."
     else:
-        formatted += "\n- Bedrijfsnotitie informatie (salaris, beschikbaarheid) mag EEN KEER genoemd worden als relevant, daarna NIET MEER"
+        formatted += "\n- Bedrijfsnotitie-informatie mag EEN KEER genoemd worden als relevant"
     
-    formatted += "\n- Herhaal GEEN andere informatie die al genoemd is"
-    formatted += "\n- Verwijs kort naar eerdere punten maar herhaal ze niet"
-    formatted += "\n- Voeg nieuwe perspectieven toe of trek conclusies"
+    formatted += "\n- Voorkom herhaling - focus op nieuwe perspectieven of verdieping"
+    formatted += "\n- **Als iemand een vraag stelt of een punt maakt, reageer daarop**"
     formatted += "\n- Werk naar eindbeslissing: afwijzen, geschikt, of verdere evaluatie"
     formatted += "\n- Geef GEEN scores of formele evaluaties - alleen zakelijke discussie"
+    
     return formatted
 
 
 def get_conversation_status(conversation: List[Dict[str, str]], persona_names: List[str]) -> str:
     """Get a summary of conversation status for orchestrator"""
     if not conversation:
-        return "Het debat begint net. Stel een opening vraag of vraag om eerste indrukken."
+        return "Je start het debat. De evaluaties zijn al gedaan. Stel een gerichte vraag over een specifiek aspect (bijv. risico's, ervaring, cultuurfit, technische vaardigheden) om de discussie te starten. Vraag NIET om eerste indrukken of herhaling van evaluatie-resultaten."
     
-    # Count messages per persona
+    # Count messages per persona and moderator
     message_counts = {}
+    moderator_count = 0
     for entry in conversation:
         role = entry.get('role', '')
-        if role and role != 'Moderator':
+        if role == 'Moderator':
+            moderator_count += 1
+        elif role and role != 'Moderator':
             message_counts[role] = message_counts.get(role, 0) + 1
     
-    # Find who hasn't spoken much
-    quiet_personas = [name.replace('_', ' ').title() for name in persona_names if message_counts.get(name.replace('_', ' ').title(), 0) < 2]
+    total_messages = len(conversation)
+    persona_count = len(persona_names)
     
-    status = f"Er zijn {len(conversation)} berichten geweest. "
-    if quiet_personas:
-        status += f"{', '.join(quiet_personas)} hebben nog weinig gezegd. "
+    # Determine phase of conversation
+    if moderator_count == 1:
+        # Just after opening, personas should have responded
+        if total_messages <= persona_count + 1:
+            status = "Personas hebben net hun eerste perspectief gedeeld. Verdiep de discussie door te vragen naar specifieke aspecten, risico's, of tegenstrijdigheden tussen de perspectieven."
+        else:
+            status = "Eerste ronde is compleet. Stuur de discussie naar verdieping: vraag naar details, risico's, of aspecten die nog niet goed besproken zijn."
+    elif moderator_count == 2:
+        status = "Tweede ronde van discussie. Verdiep door te focussen op belangrijke verschillen, risico's, of aspecten die consensus vereisen."
+    elif moderator_count == 3:
+        status = "Laatste ronde. Werk naar een conclusie: vraag om definitieve standpunten en begeleid naar een eindbeslissing (afwijzen, geschikt, of verdere evaluatie)."
+    else:
+        # Final moderator turn - time for conclusion
+        status = "Het debat is compleet. Geef een duidelijke samenvatting met eindbeslissing: afwijzen, geschikt, of verdere evaluatie nodig."
     
-    # Guide towards conclusion based on conversation length
-    if len(conversation) >= 14:
-        status += "Het debat loopt ten einde. Stuur aan op een eindbeslissing: afwijzen, geschikt, of verdere evaluatie nodig. "
-    elif len(conversation) >= 10:
-        status += "Werk naar een conclusie toe. Vraag naar eindbeoordelingen en voorkeuren. "
-    elif len(conversation) >= 6:
-        status += "Verdiep de discussie. Voorkom herhaling van al genoemde informatie. "
-    
-    # Get last few messages for context
-    last_messages = conversation[-3:] if len(conversation) >= 3 else conversation
-    recent_topics = [entry.get('content', '')[:50] for entry in last_messages]
-    status += f"Recent besproken: {', '.join(recent_topics)}"
+    # Get key topics from recent messages
+    if total_messages >= 3:
+        recent_messages = conversation[-3:]
+        status += f" Laatste berichten gaan over: {', '.join([msg.get('content', '')[:40] + '...' for msg in recent_messages])}"
     
     return status
 
@@ -377,20 +434,23 @@ async def run_multi_agent_debate(
     persona_prompts: Dict[str, str],
     candidate_info: str,
     job_info: str,
-    company_note: Optional[str] = None
-) -> str:
+    company_note: Optional[str] = None,
+    track_timing: bool = True
+) -> Tuple[str, Dict[str, Any]]:
     """
-    Run a structured turn-based debate and return JSON format
+    Run a structured turn-based debate and return JSON format with timing data
     
     Args:
         persona_prompts: Dict mapping persona names to their system prompts
         candidate_info: Candidate CV and motivation letter
         job_info: Job posting details
         company_note: Optional company guidance
+        track_timing: Whether to track timing for each step
     
     Returns:
-        JSON string array of conversation messages: [{"role": "Speaker", "content": "message"}, ...]
+        Tuple of (JSON string array, timing data dict)
     """
+    
     openai_api_key = os.getenv("OPENAI_API_KEY")
     if not openai_api_key:
         raise ValueError("OPENAI_API_KEY not found in environment")
@@ -403,19 +463,40 @@ async def run_multi_agent_debate(
     # Initialize conversation messages list
     conversation: List[Dict[str, str]] = []
     
-    # OPTIMIZED conversation flow: Reduced rounds for better performance
-    # Target: ~12-15 messages total (reduced from 20-25)
+    # Initialize timing tracking
+    timing_data = {
+        'start_time': time.time(),
+        'steps': [],
+        'total': 0
+    }
+    
+    # IMPROVED conversation flow: Interactive discussion with moderator guiding
+    # Flow: Moderator → Personas (parallel) → Moderator → Personas → ... → Moderator Conclusion
+    # Target: ~10-14 messages with proper discussion
     
     print(f"\n=== DEBAT START ===\nPersonas: {', '.join(persona_names)}")
+    print(f"Start time: {timing_data['start_time']}")
     
-    # 1. Moderator opens
+    # 1. Moderator opens the debate - Sets the topic and asks for perspectives
     print("  → Moderator opent debat...")
+    step_start = time.time()
     entry = await invoke_orchestrator(persona_names, candidate_info, job_info, conversation, company_note)
+    step_time = time.time() - step_start
     conversation.append({"role": "Moderator", "content": entry['message']})
+    if track_timing:
+        timing_data['steps'].append({
+            'step': 'moderator_opening',
+            'agent': 'Moderator',
+            'duration': round(step_time, 2),
+            'timestamp': step_start
+        })
+        print(f"  ✓ Moderator opening ({step_time:.2f}s)")
     
-    # 2. Each persona gives initial thoughts - PARALLELIZED for performance
-    print(f"  → {len(persona_names)} personas geven eerste indruk (parallel)...")
-    async def get_initial_thought(persona_name):
+    # 2. Round 1: Personas respond to moderator's opening - PARALLELIZED
+    # Each persona shares their perspective (NOT initial impressions - they already evaluated)
+    print(f"  → Round 1: {len(persona_names)} personas reageren vanuit hun perspectief (parallel)...")
+    step_start = time.time()
+    async def get_persona_response(persona_name):
         entry = await invoke_persona(
             persona_name,
             persona_prompts[persona_name],
@@ -427,62 +508,108 @@ async def run_multi_agent_debate(
         display_name = persona_name.replace('_', ' ').title()
         return {"role": display_name, "content": entry['message']}
     
-    initial_thoughts = await asyncio.gather(*[get_initial_thought(pn) for pn in persona_names])
-    conversation.extend(initial_thoughts)
+    round1_responses = await asyncio.gather(*[get_persona_response(pn) for pn in persona_names])
+    step_time = time.time() - step_start
+    conversation.extend(round1_responses)
+    if track_timing:
+        timing_data['steps'].append({
+            'step': 'personas_round1',
+            'agents': persona_names,
+            'duration': round(step_time, 2),
+            'timestamp': step_start,
+            'parallel': True
+        })
+        print(f"  ✓ Round 1 complete ({step_time:.2f}s)")
     
-    # 3. Moderator guides discussion
+    # 3. Moderator responds and guides discussion deeper
     print("  → Moderator begeleidt discussie...")
+    step_start = time.time()
     entry = await invoke_orchestrator(persona_names, candidate_info, job_info, conversation, company_note)
+    step_time = time.time() - step_start
     conversation.append({"role": "Moderator", "content": entry['message']})
+    if track_timing:
+        timing_data['steps'].append({
+            'step': 'moderator_guidance',
+            'agent': 'Moderator',
+            'duration': round(step_time, 2),
+            'timestamp': step_start
+        })
+        print(f"  ✓ Moderator guidance ({step_time:.2f}s)")
     
-    # 4. Personas respond (round 2) - PARALLELIZED for performance
-    print(f"  → {len(persona_names)} personas reageren (parallel)...")
-    async def get_response(persona_name):
-        entry = await invoke_persona(
-            persona_name,
-            persona_prompts[persona_name],
-            candidate_info,
-            job_info,
-            conversation.copy(),
-            company_note
-        )
-        display_name = persona_name.replace('_', ' ').title()
-        return {"role": display_name, "content": entry['message']}
+    # 4. Round 2: Personas discuss and respond to each other - PARALLELIZED
+    print(f"  → Round 2: {len(persona_names)} personas discussiëren (parallel)...")
+    step_start = time.time()
+    round2_responses = await asyncio.gather(*[get_persona_response(pn) for pn in persona_names])
+    step_time = time.time() - step_start
+    conversation.extend(round2_responses)
+    if track_timing:
+        timing_data['steps'].append({
+            'step': 'personas_round2',
+            'agents': persona_names,
+            'duration': round(step_time, 2),
+            'timestamp': step_start,
+            'parallel': True
+        })
+        print(f"  ✓ Round 2 complete ({step_time:.2f}s)")
     
-    responses = await asyncio.gather(*[get_response(pn) for pn in persona_names])
-    conversation.extend(responses)
-    
-    # 5. Moderator asks for final thoughts
-    print("  → Moderator vraagt om afronding...")
+    # 5. Moderator deepens discussion or asks for specific aspects
+    print("  → Moderator verdiept discussie...")
+    step_start = time.time()
     entry = await invoke_orchestrator(persona_names, candidate_info, job_info, conversation, company_note)
+    step_time = time.time() - step_start
     conversation.append({"role": "Moderator", "content": entry['message']})
+    if track_timing:
+        timing_data['steps'].append({
+            'step': 'moderator_deepening',
+            'agent': 'Moderator',
+            'duration': round(step_time, 2),
+            'timestamp': step_start
+        })
+        print(f"  ✓ Moderator deepening ({step_time:.2f}s)")
     
-    # 6. Each persona gives final perspective - PARALLELIZED for performance
-    print(f"  → {len(persona_names)} personas geven laatste perspectief (parallel)...")
-    async def get_final_perspective(persona_name):
-        entry = await invoke_persona(
-            persona_name,
-            persona_prompts[persona_name],
-            candidate_info,
-            job_info,
-            conversation.copy(),
-            company_note
-        )
-        display_name = persona_name.replace('_', ' ').title()
-        return {"role": display_name, "content": entry['message']}
+    # 6. Round 3: Personas give final reasoning - PARALLELIZED
+    print(f"  → Round 3: {len(persona_names)} personas geven laatste redenering (parallel)...")
+    step_start = time.time()
+    round3_responses = await asyncio.gather(*[get_persona_response(pn) for pn in persona_names])
+    step_time = time.time() - step_start
+    conversation.extend(round3_responses)
+    if track_timing:
+        timing_data['steps'].append({
+            'step': 'personas_round3',
+            'agents': persona_names,
+            'duration': round(step_time, 2),
+            'timestamp': step_start,
+            'parallel': True
+        })
+        print(f"  ✓ Round 3 complete ({step_time:.2f}s)")
     
-    final_perspectives = await asyncio.gather(*[get_final_perspective(pn) for pn in persona_names])
-    conversation.extend(final_perspectives)
-    
-    # 7. Moderator provides final summary
-    print("  → Moderator geeft samenvatting...")
+    # Final: Moderator provides final summary and conclusion
+    print("  → Moderator geeft samenvatting en conclusie...")
+    step_start = time.time()
     entry = await invoke_orchestrator_summary(persona_names, candidate_info, job_info, conversation, company_note)
+    step_time = time.time() - step_start
     conversation.append({"role": "Moderator", "content": entry['message']})
+    if track_timing:
+        timing_data['steps'].append({
+            'step': 'moderator_final_summary',
+            'agent': 'Moderator',
+            'duration': round(step_time, 2),
+            'timestamp': step_start
+        })
+        print(f"  ✓ Moderator final summary ({step_time:.2f}s)")
+    
+    # Calculate total time
+    timing_data['total'] = round(time.time() - timing_data['start_time'], 2)
+    timing_data['end_time'] = time.time()
     
     # Return as JSON string
     json_output = json.dumps(conversation, ensure_ascii=False, indent=2)
     
     print(f"\n=== DEBAT VOLTOOID ===")
     print(f"Totaal aantal berichten: {len(conversation)}")
+    print(f"Totale tijd: {timing_data['total']}s")
+    print(f"Aantal stappen: {len(timing_data.get('steps', []))}")
+    print(f"Timing data keys: {list(timing_data.keys())}")
+    print(f"First step: {timing_data.get('steps', [{}])[0] if timing_data.get('steps') else 'None'}")
     
-    return json_output
+    return json_output, timing_data

@@ -3,6 +3,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import AdvancedFilter from './AdvancedFilter';
+import { useCompany } from '../contexts/CompanyContext';
 
 interface EvaluationResult {
   id: string;
@@ -43,7 +44,8 @@ export default function CompanyResults() {
 
   const loadJobs = async () => {
     try {
-      const response = await fetch('/api/job-descriptions');
+      const companyParam = selectedCompany?.id ? `?company_id=${selectedCompany.id}` : '';
+      const response = await fetch(`/api/job-descriptions${companyParam}`);
       if (response.ok) {
         const data = await response.json();
         setJobs(data.jobs || []);
@@ -55,7 +57,8 @@ export default function CompanyResults() {
 
   const loadCandidates = async () => {
     try {
-      const response = await fetch('/api/candidates');
+      const companyParam = selectedCompany?.id ? `?company_id=${selectedCompany.id}` : '';
+      const response = await fetch(`/api/candidates${companyParam}`);
       if (response.ok) {
         const data = await response.json();
         const map: Record<string, string> = {};
@@ -71,6 +74,8 @@ export default function CompanyResults() {
     }
   };
 
+  const { selectedCompany } = useCompany();
+  
   const loadResults = async () => {
     setIsLoading(true);
     try {
@@ -81,6 +86,9 @@ export default function CompanyResults() {
       }
       if (filterJob) {
         params.append('job_id', filterJob);
+      }
+      if (selectedCompany?.id) {
+        params.append('company_id', selectedCompany.id);
       }
       if (params.toString()) {
         url += '?' + params.toString();
@@ -397,10 +405,10 @@ export default function CompanyResults() {
                   </div>
                 </div>
 
-                {/* Results Grid */}
+                {/* Results - Merged: Evaluation with Debate tab inside */}
                 {(evaluations.length > 0 || debates.length > 0) && (
-                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                    {/* Evaluations Column */}
+                  <div>
+                    {/* Evaluations - Main view */}
                     <div>
                       <div className="flex items-center justify-between mb-4">
                         <h3 className="text-xl font-semibold text-barnes-dark-violet">📊 Evaluaties</h3>
@@ -420,6 +428,9 @@ export default function CompanyResults() {
                             const score = evalResult.result_data?.combined_score;
                             const recommendation = evalResult.result_data?.combined_recommendation;
                             const companyNote = evalResult.company_note;
+                            // Find related debate for this candidate
+                            const relatedDebate = debates.find(d => d.candidate_id === evalResult.candidate_id);
+                            
                             return (
                               <div
                                 key={evalResult.id}
@@ -454,6 +465,16 @@ export default function CompanyResults() {
                                     <p className="line-clamp-2">{companyNote}</p>
                                   </div>
                                 )}
+                                {/* Show debate indicator if debate exists */}
+                                {relatedDebate && (
+                                  <div className="mb-2 p-2 rounded-lg bg-barnes-orange/10 border border-barnes-orange/30">
+                                    <div className="flex items-center gap-2 text-xs">
+                                      <span className="text-barnes-orange">💬</span>
+                                      <span className="text-barnes-dark-violet font-medium">Debat beschikbaar</span>
+                                      <span className="text-barnes-dark-gray">({formatDate(relatedDebate.created_at)})</span>
+                                    </div>
+                                  </div>
+                                )}
                                 <div className="flex items-center justify-between mt-3 pt-2 border-t border-gray-100 text-xs text-barnes-dark-gray">
                                   <span>{formatDate(evalResult.created_at)}</span>
                                   <span className="flex items-center gap-1 text-barnes-violet font-medium">
@@ -463,57 +484,6 @@ export default function CompanyResults() {
                               </div>
                             );
                           })}
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Debates Column */}
-                    <div>
-                      <div className="flex items-center justify-between mb-4">
-                        <h3 className="text-xl font-semibold text-barnes-dark-violet">💬 Debatten</h3>
-                        {debates.length > 0 && (
-                          <span className="text-xs text-barnes-dark-gray">
-                            Laatste: {formatDate(debates[0].created_at)}
-                          </span>
-                        )}
-                      </div>
-                      {debates.length === 0 ? (
-                        <div className="p-4 border border-dashed border-gray-200 rounded-xl text-sm text-barnes-dark-gray text-center">
-                          Nog geen debatten opgeslagen
-                        </div>
-                      ) : (
-                        <div className="space-y-3">
-                          {debates.map(debateResult => (
-                            <div
-                              key={debateResult.id}
-                              className="p-4 border-2 border-gray-200 rounded-xl hover:border-barnes-orange transition-all cursor-pointer bg-white hover:shadow-md"
-                              onClick={() => router.push(`/company/results/${debateResult.id}`)}
-                            >
-                              <div className="flex items-start justify-between gap-3 mb-2">
-                                <div className="flex-1 min-w-0">
-                                  <p className="text-xs text-barnes-dark-gray uppercase tracking-wide mb-1">Kandidaat</p>
-                                  <p className="text-base font-semibold text-barnes-dark-violet truncate">
-                                    {debateResult.candidate_name || 'Onbekende kandidaat'}
-                                  </p>
-                                </div>
-                                <span className="px-2 py-1 text-xs font-semibold text-barnes-orange bg-barnes-orange/10 rounded-full flex-shrink-0">
-                                  Debat
-                                </span>
-                              </div>
-                              {debateResult.company_note && (
-                                <div className="mb-2 p-2 rounded-lg bg-gray-50 border border-gray-200 text-xs text-barnes-dark-gray">
-                                  <p className="text-[10px] uppercase tracking-wide text-barnes-dark-gray mb-0.5">Bedrijfsnotitie</p>
-                                  <p className="line-clamp-2">{debateResult.company_note}</p>
-                                </div>
-                              )}
-                              <div className="flex items-center justify-between mt-3 pt-2 border-t border-gray-100 text-xs text-barnes-dark-gray">
-                                <span>{formatDate(debateResult.created_at)}</span>
-                                <span className="flex items-center gap-1 text-barnes-orange font-medium">
-                                  Bekijk debat →
-                                </span>
-                              </div>
-                            </div>
-                          ))}
                         </div>
                       )}
                     </div>

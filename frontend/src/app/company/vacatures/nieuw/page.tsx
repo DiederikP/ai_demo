@@ -109,7 +109,7 @@ export default function NewJobPage() {
           }
         }}
       />
-      <div className="md:ml-64 p-4 md:p-8">
+      <div className="p-4 md:p-8 transition-all duration-300" style={{ marginLeft: 'var(--nav-width, 16rem)' }}>
         <div className="max-w-4xl mx-auto bg-white rounded-2xl shadow-sm border border-gray-200 p-4 md:p-8 space-y-6">
           <div className="flex items-center justify-between">
             <div>

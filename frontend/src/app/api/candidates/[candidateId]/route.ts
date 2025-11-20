@@ -3,40 +3,35 @@ import { NextRequest, NextResponse } from 'next/server';
 const BACKEND_URL = process.env.BACKEND_URL || process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
 
 export async function GET(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ candidateId: string }> }
 ) {
   try {
     const { candidateId } = await params;
-    const response = await fetch(`${BACKEND_URL}/candidates/${candidateId}`);
-    const data = await response.json();
-    return NextResponse.json(data, { status: response.status });
-  } catch (error: any) {
-    console.error('Error fetching candidate detail:', error);
-    return NextResponse.json(
-      { error: error.message || 'Failed to fetch candidate detail' },
-      { status: 500 }
-    );
-  }
-}
+    const authHeader = request.headers.get('authorization');
 
-export async function DELETE(
-  _request: NextRequest,
-  { params }: { params: Promise<{ candidateId: string }> }
-) {
-  try {
-    const { candidateId } = await params;
-    
     const response = await fetch(`${BACKEND_URL}/candidates/${candidateId}`, {
-      method: 'DELETE',
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(authHeader && { Authorization: authHeader }),
+      },
     });
 
-    const data = await response.json().catch(() => ({}));
-    return NextResponse.json(data, { status: response.status });
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => 'Unknown error');
+      return NextResponse.json(
+        { error: errorText || `Backend returned ${response.status}` },
+        { status: response.status }
+      );
+    }
+
+    const data = await response.json();
+    return NextResponse.json(data);
   } catch (error: any) {
-    console.error('Error deleting candidate:', error);
+    console.error('[API /candidates/[candidateId]] Error:', error);
     return NextResponse.json(
-      { error: error.message || 'Failed to delete candidate' },
+      { error: error.message || 'Failed to fetch candidate' },
       { status: 500 }
     );
   }
@@ -48,34 +43,33 @@ export async function PUT(
 ) {
   try {
     const { candidateId } = await params;
+    const authHeader = request.headers.get('authorization');
     const body = await request.json();
-    const { job_ids } = body;
-    
-    if (!job_ids || !Array.isArray(job_ids)) {
+
+    const response = await fetch(`${BACKEND_URL}/candidates/${candidateId}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(authHeader && { Authorization: authHeader }),
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => 'Unknown error');
       return NextResponse.json(
-        { error: 'job_ids array is required' },
-        { status: 400 }
+        { error: errorText || `Backend returned ${response.status}` },
+        { status: response.status }
       );
     }
 
-    const formData = new FormData();
-    job_ids.forEach((jobId: string) => {
-      formData.append('job_ids', jobId);
-    });
-
-    const response = await fetch(`${BACKEND_URL}/candidates/${candidateId}/assign-jobs`, {
-      method: 'PUT',
-      body: formData,
-    });
-
-    const data = await response.json().catch(() => ({}));
-    return NextResponse.json(data, { status: response.status });
+    const data = await response.json();
+    return NextResponse.json(data);
   } catch (error: any) {
-    console.error('Error assigning jobs:', error);
+    console.error('[API /candidates/[candidateId]] Error:', error);
     return NextResponse.json(
-      { error: error.message || 'Failed to assign jobs' },
+      { error: error.message || 'Failed to update candidate' },
       { status: 500 }
     );
   }
 }
-
