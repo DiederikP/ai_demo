@@ -3671,10 +3671,9 @@ async def get_candidates(
             if current_user.company_id:
                 query = query.filter(CandidateDB.submitted_by_company_id == current_user.company_id)
         elif user_role in ["company_admin", "company_user", "viewer"]:
-            # Company users see only candidates submitted by recruiters for their company's jobs
-            # Candidates must have submitted_by_company_id set (indicating recruiter submission)
-            # AND be assigned to one of their company's jobs
-            query = query.filter(CandidateDB.submitted_by_company_id.isnot(None))
+            # Company users see candidates submitted by recruiters for their company's jobs
+            # Also include legacy candidates (without submitted_by_company_id) that are assigned to their jobs
+            # This ensures backward compatibility with existing data
             
             # Also filter by company's jobs if company_id is provided or from user context
             effective_company_id = company_id or current_user.company_id
@@ -3684,11 +3683,22 @@ async def get_candidates(
                 
                 if company_job_ids:
                     # Filter candidates assigned to this company's jobs
+                    # Include candidates that:
+                    # 1. Are assigned to company's jobs (job_id or preferential_job_ids), AND
+                    # 2. Either have submitted_by_company_id set (recruiter-submitted) OR
+                    #    have no submitted_by_company_id (legacy candidates for backward compatibility)
                     query = query.filter(
                         or_(
                             CandidateDB.job_id.in_(company_job_ids),
                             # Also check preferential_job_ids
                             or_(*[CandidateDB.preferential_job_ids.like(f"%{job_id}%") for job_id in company_job_ids])
+                        )
+                    )
+                    # Allow both recruiter-submitted candidates and legacy candidates (no submitted_by_company_id)
+                    query = query.filter(
+                        or_(
+                            CandidateDB.submitted_by_company_id.isnot(None),  # Recruiter-submitted
+                            CandidateDB.submitted_by_company_id.is_(None)  # Legacy candidates (backward compatibility)
                         )
                     )
                 else:
