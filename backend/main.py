@@ -6408,6 +6408,78 @@ async def create_user(
         print(f"Error creating user: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to create user: {str(e)}")
 
+@app.delete("/users/{user_id}")
+async def delete_user(
+    user_id: str,
+    current_user: UserDB = Depends(require_role(["admin"]))
+):
+    """Delete a user - ADMIN ONLY
+    
+    Prevents deletion of the 4 required users (admin@admin.nl, user@company.nl, user@recruiter.nl, user@kandidaat.nl)
+    """
+    try:
+        db = SessionLocal()
+        
+        # Prevent deletion of required users
+        required_emails = [
+            "user@admin.nl",
+            "user@company.nl",
+            "user@recruiter.nl",
+            "user@kandidaat.nl"
+        ]
+        
+        user = db.query(UserDB).filter(UserDB.id == user_id).first()
+        
+        if not user:
+            db.close()
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Check if this is a required user
+        if user.email.lower() in [email.lower() for email in required_emails]:
+            db.close()
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot delete required user: {user.email}"
+            )
+        
+        # Prevent self-deletion
+        if user.id == current_user.id:
+            db.close()
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot delete your own account"
+            )
+        
+        # Delete associated data
+        # Delete comments
+        db.query(CommentDB).filter(CommentDB.user_id == user_id).delete()
+        # Delete approvals
+        db.query(ApprovalDB).filter(ApprovalDB.user_id == user_id).delete()
+        # Delete job watchers
+        db.query(JobWatcherDB).filter(JobWatcherDB.user_id == user_id).delete()
+        # Delete candidate watchers
+        db.query(CandidateWatcherDB).filter(CandidateWatcherDB.user_id == user_id).delete()
+        # Delete notifications
+        db.query(NotificationDB).filter(NotificationDB.user_id == user_id).delete()
+        
+        # Delete the user
+        db.delete(user)
+        db.commit()
+        db.close()
+        
+        return {
+            "success": True,
+            "message": f"User '{user.email}' deleted successfully"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting user: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to delete user: {str(e)}")
+
 # -----------------------------
 # Company Endpoints
 # -----------------------------

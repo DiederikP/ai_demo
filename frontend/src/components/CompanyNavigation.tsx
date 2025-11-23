@@ -215,6 +215,12 @@ export default function CompanyNavigation({ activeModule, onModuleChange, onColl
         { id: 'notifications' as const, label: 'Notificaties', icon: '🔔' },
       ];
 
+      // Add admin module if user is admin
+      const allModules = isAdmin ? [
+        ...modules,
+        { id: 'admin' as const, label: 'Admin', icon: '🔧', href: '/admin/manage' }
+      ] : modules;
+
   return (
     <>
       {/* Mobile menu button */}
@@ -325,22 +331,34 @@ export default function CompanyNavigation({ activeModule, onModuleChange, onColl
             <GlobalSearch />
           </div>
         )}
-        {modules.map((module) => (
+        {allModules.map((module: any) => (
           <div key={module.id}>
-            <button
-              onClick={() => {
-                onModuleChange(module.id);
-                setIsMobileMenuOpen(false);
-              }}
-              className={`w-full flex items-center gap-3 px-4 py-3 text-left transition-colors ${
-                activeModule === module.id
-                  ? 'bg-barnes-violet/10 text-barnes-violet border-r-2 border-barnes-violet'
-                  : 'text-barnes-dark-gray hover:bg-gray-50'
-              }`}
-            >
-              <span className="text-xl">{module.icon}</span>
-              {!isCollapsed && <span className="font-medium">{module.label}</span>}
-            </button>
+            {module.href ? (
+              <a
+                href={module.href}
+                className={`w-full flex items-center gap-3 px-4 py-3 text-left transition-colors ${
+                  'text-barnes-dark-gray hover:bg-gray-50'
+                }`}
+              >
+                <span className="text-xl">{module.icon}</span>
+                {!isCollapsed && <span className="font-medium">{module.label}</span>}
+              </a>
+            ) : (
+              <button
+                onClick={() => {
+                  onModuleChange(module.id);
+                  setIsMobileMenuOpen(false);
+                }}
+                className={`w-full flex items-center gap-3 px-4 py-3 text-left transition-colors ${
+                  activeModule === module.id
+                    ? 'bg-barnes-violet/10 text-barnes-violet border-r-2 border-barnes-violet'
+                    : 'text-barnes-dark-gray hover:bg-gray-50'
+                }`}
+              >
+                <span className="text-xl">{module.icon}</span>
+                {!isCollapsed && <span className="font-medium">{module.label}</span>}
+              </button>
+            )}
           </div>
         ))}
       </div>
