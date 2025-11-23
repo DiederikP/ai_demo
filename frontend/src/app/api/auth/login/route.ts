@@ -68,14 +68,34 @@ export async function POST(request: NextRequest) {
 
     if (!response.ok) {
       let errorDetail = 'Login failed';
+      let errorObj: any = null;
+      
       try {
-        const error = await response.json();
-        errorDetail = error.detail || error.error || errorDetail;
-        console.error(`[API /auth/login] Backend returned error:`, error);
+        errorObj = await response.json();
+        // Extract error message from various possible fields
+        errorDetail = errorObj.detail || errorObj.error || errorObj.message || errorDetail;
+        
+        // If errorDetail is still generic, try to extract from nested objects
+        if (errorDetail === 'Login failed' && errorObj) {
+          if (typeof errorObj === 'string') {
+            errorDetail = errorObj;
+          } else if (errorObj.error && typeof errorObj.error === 'string') {
+            errorDetail = errorObj.error;
+          } else if (errorObj.detail && typeof errorObj.detail === 'string') {
+            errorDetail = errorObj.detail;
+          }
+        }
+        
+        console.error(`[API /auth/login] Backend returned error:`, JSON.stringify(errorObj, null, 2));
       } catch (e) {
         const errorText = await response.text().catch(() => 'Unknown error');
         console.error(`[API /auth/login] Backend error (non-JSON):`, errorText);
         errorDetail = errorText || `HTTP ${response.status}: ${response.statusText}`;
+      }
+
+      // Ensure errorDetail is always a string
+      if (typeof errorDetail !== 'string' || errorDetail === '[object Object]') {
+        errorDetail = `Login failed: ${response.status} ${response.statusText}`;
       }
 
       return NextResponse.json(
