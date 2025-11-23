@@ -223,12 +223,6 @@ export default function CompanyNavigation({ activeModule, onModuleChange, onColl
       
       const allModules = [...modules, ...adminModules];
 
-      // Add admin module if user is admin
-      const allModules = isAdmin ? [
-        ...modules,
-        { id: 'admin' as const, label: 'Admin', icon: '🔧', href: '/admin/manage' }
-      ] : modules;
-
   return (
     <>
       {/* Mobile menu button */}
