@@ -968,11 +968,21 @@ def auto_setup_users():
         # Don't fail startup if setup fails
 
 # Run auto-setup on startup (after password hashing is available)
-try:
-    auto_setup_users()
-except Exception as e:
-    print(f"⚠ Could not run auto-setup on startup: {e}")
-    # Don't fail startup if auto-setup fails
+# Use a flag to ensure it only runs once per process
+_auto_setup_run = False
+def run_auto_setup_once():
+    global _auto_setup_run
+    if not _auto_setup_run:
+        try:
+            auto_setup_users()
+            _auto_setup_run = True
+        except Exception as e:
+            print(f"⚠ Could not run auto-setup on startup: {e}")
+            import traceback
+            traceback.print_exc()
+            # Don't fail startup if auto-setup fails
+
+run_auto_setup_once()
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     """Create a JWT access token"""
