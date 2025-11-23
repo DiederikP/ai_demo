@@ -5728,19 +5728,24 @@ async def get_recruiter_vacancies(
         import json
         db = SessionLocal()
         
-        # Get all active vacancies from company portals
+        # Get all vacancies from company portals (active and inactive)
         # Exclude vacancies from the recruiter's own company (if they have one)
         all_vacancies_query = db.query(JobPostingDB)
         
-        # Only show active vacancies
-        if hasattr(JobPostingDB, 'is_active'):
-            all_vacancies_query = all_vacancies_query.filter(JobPostingDB.is_active == True)
+        # Don't filter by is_active - show all vacancies (including old ones)
+        # Old vacancies might not have is_active set, so we show everything
         
         # Exclude vacancies from recruiter's own company (if they have a company_id)
         # Recruiters shouldn't see their own company's vacancies
+        # But include jobs with NULL company_id (old jobs) for backward compatibility
         if current_user.company_id:
-            all_vacancies_query = all_vacancies_query.filter(JobPostingDB.company_id != current_user.company_id)
-        # If no company_id, show all vacancies
+            all_vacancies_query = all_vacancies_query.filter(
+                or_(
+                    JobPostingDB.company_id != current_user.company_id,
+                    JobPostingDB.company_id.is_(None)  # Include old jobs without company_id
+                )
+            )
+        # If no company_id, show all vacancies (including NULL company_id)
         
         # Apply include_new filter
         if not include_new:
