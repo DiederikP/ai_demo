@@ -1,35 +1,67 @@
 'use client';
 
-import { useState, useEffect, FormEvent } from 'react';
+import { useState, useRef, FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import Header from '../../../components/Header';
 import { useAuth } from '../../../contexts/AuthContext';
 
+interface AccountTile {
+  email: string;
+  name: string;
+  role: string;
+  description: string;
+  icon: string;
+  color: string;
+  bgColor: string;
+}
+
+const ACCOUNT_OPTIONS: AccountTile[] = [
+  {
+    email: 'user@admin.nl',
+    name: 'Admin',
+    role: 'Administrator',
+    description: 'Volledige toegang tot alle portals',
+    icon: '👑',
+    color: 'text-purple-700',
+    bgColor: 'bg-purple-50 hover:bg-purple-100 border-purple-200'
+  },
+  {
+    email: 'user@company.nl',
+    name: 'Company',
+    role: 'Bedrijf',
+    description: 'Bedrijfsportal - vacatures en kandidaten',
+    icon: '🏢',
+    color: 'text-blue-700',
+    bgColor: 'bg-blue-50 hover:bg-blue-100 border-blue-200'
+  },
+  {
+    email: 'user@recruiter.nl',
+    name: 'Recruiter',
+    role: 'Recruiter',
+    description: 'Recruiterportal - kandidaten beheren',
+    icon: '👔',
+    color: 'text-green-700',
+    bgColor: 'bg-green-50 hover:bg-green-100 border-green-200'
+  },
+  {
+    email: 'user@kandidaat.nl',
+    name: 'Candidate',
+    role: 'Kandidaat',
+    description: 'Kandidaatportal - sollicitatiestatus',
+    icon: '👤',
+    color: 'text-orange-700',
+    bgColor: 'bg-orange-50 hover:bg-orange-100 border-orange-200'
+  }
+];
+
 export default function CompanyLogin() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [selectedAccount, setSelectedAccount] = useState<AccountTile | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const { login, isLoading, isAuthenticated, user } = useAuth();
+  const { login, isLoading } = useAuth();
   const router = useRouter();
-
-  // Redirect if already authenticated - but only after a delay to allow form interaction
-  useEffect(() => {
-    if (isAuthenticated && user && !isLoading) {
-      // Small delay to prevent immediate redirect (allows user to see login page if needed)
-      const timer = setTimeout(() => {
-        const role = user.role?.toLowerCase();
-        if (role === 'recruiter') {
-          router.push('/recruiter/dashboard');
-        } else if (role === 'candidate') {
-          router.push('/candidate/dashboard');
-        } else {
-          // Admin, company_admin, company_user all go to company dashboard
-          router.push('/company/dashboard');
-        }
-      }, 500); // 500ms delay
-      return () => clearTimeout(timer);
-    }
-  }, [isAuthenticated, user, isLoading, router]);
+  const passwordInputRef = useRef<HTMLInputElement>(null);
 
   const handleLogin = async (e: FormEvent) => {
     e.preventDefault();
@@ -122,19 +154,58 @@ export default function CompanyLogin() {
     }
   };
 
+  const handleAccountSelect = (account: AccountTile) => {
+    setEmail(account.email);
+    setSelectedAccount(account);
+    setError(null);
+    // Focus password field after a short delay
+    setTimeout(() => {
+      passwordInputRef.current?.focus();
+    }, 100);
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-b from-barnes-light-gray to-white">
       <Header />
-      <div className="max-w-md mx-auto px-6 py-16">
-        <div className="bg-white rounded-2xl shadow-xl p-8 border border-gray-200">
-          <div className="text-center mb-8">
-            <div className="w-16 h-16 rounded-full bg-barnes-orange flex items-center justify-center mx-auto mb-4">
-              <span className="text-white font-bold text-2xl">B</span>
-            </div>
-            <h1 className="text-3xl font-bold text-barnes-dark-violet mb-2">Company Login</h1>
-            <p className="text-barnes-dark-gray">Access your company dashboard</p>
+      <div className="max-w-4xl mx-auto px-6 py-16">
+        <div className="text-center mb-8">
+          <div className="w-16 h-16 rounded-full bg-barnes-orange flex items-center justify-center mx-auto mb-4">
+            <span className="text-white font-bold text-2xl">B</span>
           </div>
+          <h1 className="text-3xl font-bold text-barnes-dark-violet mb-2">Login</h1>
+          <p className="text-barnes-dark-gray">Kies een account om in te loggen</p>
+        </div>
 
+        {/* Account Selection Tiles */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
+          {ACCOUNT_OPTIONS.map((account) => (
+            <button
+              key={account.email}
+              type="button"
+              onClick={() => handleAccountSelect(account)}
+              className={`p-6 rounded-xl border-2 transition-all duration-200 text-left ${
+                selectedAccount?.email === account.email
+                  ? `${account.bgColor} border-2 border-current shadow-lg scale-105`
+                  : `${account.bgColor} border-gray-200`
+              }`}
+            >
+              <div className="flex items-start gap-4">
+                <div className="text-4xl">{account.icon}</div>
+                <div className="flex-1">
+                  <div className={`font-bold text-lg mb-1 ${account.color}`}>
+                    {account.name}
+                  </div>
+                  <div className="text-sm text-gray-600 mb-1">{account.role}</div>
+                  <div className="text-xs text-gray-500">{account.description}</div>
+                  <div className="text-xs text-gray-400 mt-2 font-mono">{account.email}</div>
+                </div>
+              </div>
+            </button>
+          ))}
+        </div>
+
+        {/* Login Form */}
+        <div className="bg-white rounded-2xl shadow-xl p-8 border border-gray-200">
           {error && (
             <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
               {error}
@@ -150,11 +221,14 @@ export default function CompanyLogin() {
                 id="email"
                 type="email"
                 value={email}
-                onChange={(e) => setEmail(e.target.value)}
+                onChange={(e) => {
+                  setEmail(e.target.value);
+                  setSelectedAccount(null);
+                }}
                 required
                 disabled={isLoading}
                 className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-barnes-violet focus:border-transparent disabled:opacity-50 disabled:cursor-not-allowed"
-                placeholder="company@example.com"
+                placeholder="Kies een account hierboven of voer email in"
               />
             </div>
 
@@ -163,6 +237,7 @@ export default function CompanyLogin() {
                 Wachtwoord
               </label>
               <input
+                ref={passwordInputRef}
                 id="password"
                 type="password"
                 value={password}
@@ -176,7 +251,7 @@ export default function CompanyLogin() {
 
             <button
               type="submit"
-              disabled={isLoading}
+              disabled={isLoading || !email || !password}
               className="w-full btn-primary py-3 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {isLoading ? 'Bezig met inloggen...' : 'Inloggen'}
