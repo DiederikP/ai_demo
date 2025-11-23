@@ -71,7 +71,7 @@ export default function RecruiterVacancies() {
       </div>
 
       {/* New Vacancies Section */}
-      {showNewVacancies && newVacancies.length > 0 && (
+      {newVacancies.length > 0 && (
         <div className="mb-8">
           <h2 className="text-xl font-semibold text-barnes-dark-violet mb-4">
             Nieuwe Vacatures ({newVacancies.length})
@@ -150,10 +150,7 @@ export default function RecruiterVacancies() {
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-12 text-center">
           <div className="text-gray-500 mb-4">Geen vacatures beschikbaar</div>
           <div className="text-sm text-gray-400">
-            {showNewVacancies 
-              ? "Er zijn momenteel geen nieuwe of toegewezen vacatures"
-              : "Neem contact op met de beheerder om vacatures toegewezen te krijgen"
-            }
+            Er zijn momenteel geen nieuwe of toegewezen vacatures
           </div>
         </div>
       )}
