@@ -100,7 +100,7 @@ export default function AdminResetPage() {
         <div className="mt-6 text-sm text-gray-600">
           <p className="mb-2">Na reset kun je inloggen met:</p>
           <ul className="list-disc list-inside space-y-1">
-            <li>Admin: <code>admin@demo.local</code> / <code>admin123</code></li>
+            <li>Admin: <code>User@admin.nl</code> / <code>admin123</code></li>
             <li>Company: <code>user@company.nl</code> / <code>company123</code></li>
             <li>Recruiter: <code>user@recruiter.nl</code> / <code>recruiter123</code></li>
             <li>Candidate: <code>user@kandidaat.nl</code> / <code>kandidaat123</code></li>
