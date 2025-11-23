@@ -29,10 +29,35 @@ export default function CompanyLogin() {
     }
 
     try {
+      console.log('[Login Page] Attempting login...');
       await login(email, password);
+      console.log('[Login Page] Login successful, redirecting...');
       router.push('/company/dashboard');
     } catch (err: any) {
-      setError(err.message || 'Inloggen mislukt. Controleer uw email en wachtwoord.');
+      console.error('[Login Page] Login error:', err);
+      console.error('[Login Page] Error details:', {
+        message: err.message,
+        stack: err.stack,
+        name: err.name,
+        toString: err.toString()
+      });
+      
+      // Extract error message from various possible formats
+      let errorMessage = 'Inloggen mislukt. Controleer uw email en wachtwoord.';
+      
+      if (err.message) {
+        errorMessage = err.message;
+      } else if (err.error) {
+        errorMessage = err.error;
+      } else if (err.detail) {
+        errorMessage = err.detail;
+      } else if (typeof err === 'string') {
+        errorMessage = err;
+      } else if (err.toString && err.toString() !== '[object Object]') {
+        errorMessage = err.toString();
+      }
+      
+      setError(errorMessage);
     }
   };
 

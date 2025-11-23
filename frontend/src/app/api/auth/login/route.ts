@@ -92,11 +92,35 @@ export async function POST(request: NextRequest) {
   } catch (error: any) {
     console.error(`[API /auth/login] ========== UNEXPECTED ERROR ==========`);
     console.error(`[API /auth/login] Error:`, error);
-    console.error(`[API /auth/login] Message:`, error.message);
+    console.error(`[API /auth/login] Error type:`, error?.name);
+    console.error(`[API /auth/login] Message:`, error?.message);
+    console.error(`[API /auth/login] Stack:`, error?.stack);
+    console.error(`[API /auth/login] Full error:`, JSON.stringify(error, Object.getOwnPropertyNames(error)));
     console.error(`[API /auth/login] ======================================`);
 
+    // Extract meaningful error message
+    let errorMessage = 'Login failed';
+    let errorDetails = 'Unknown error';
+    
+    if (error?.message) {
+      errorMessage = error.message;
+      errorDetails = error.message;
+    } else if (error?.error) {
+      errorMessage = error.error;
+      errorDetails = error.error;
+    } else if (typeof error === 'string') {
+      errorMessage = error;
+      errorDetails = error;
+    } else {
+      errorDetails = error?.toString() || JSON.stringify(error);
+    }
+
     return NextResponse.json(
-      { error: error.message || 'Login failed', details: error.toString() },
+      { 
+        error: errorMessage, 
+        details: errorDetails,
+        type: error?.name || 'UnknownError'
+      },
       { status: 500 }
     );
   }

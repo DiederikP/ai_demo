@@ -46,8 +46,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = async (email: string, password: string) => {
     setIsLoading(true);
     try {
+      console.log('[AuthContext] Calling loginApi...');
       const response = await loginApi(email, password);
+      console.log('[AuthContext] Login successful, setting user:', response.user);
       setUser(response.user);
+    } catch (error: any) {
+      console.error('[AuthContext] Login error:', error);
+      console.error('[AuthContext] Error details:', {
+        message: error?.message,
+        error: error?.error,
+        detail: error?.detail,
+        name: error?.name,
+        stack: error?.stack
+      });
+      // Re-throw the error so the login page can handle it
+      throw error;
     } finally {
       setIsLoading(false);
     }

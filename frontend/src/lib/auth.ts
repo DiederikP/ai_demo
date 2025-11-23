@@ -143,9 +143,29 @@ export async function login(email: string, password: string): Promise<AuthRespon
     return data;
   } catch (error: any) {
     console.error(`[Auth] Login error caught:`, error);
+    console.error(`[Auth] Error type:`, error?.name);
+    console.error(`[Auth] Error message:`, error?.message);
+    console.error(`[Auth] Error stack:`, error?.stack);
     
-    // Re-throw with better message if needed
-    throw error;
+    // Extract meaningful error message
+    let errorMessage = 'Login failed';
+    
+    if (error?.message) {
+      errorMessage = error.message;
+    } else if (error?.error) {
+      errorMessage = error.error;
+    } else if (error?.detail) {
+      errorMessage = error.detail;
+    } else if (typeof error === 'string') {
+      errorMessage = error;
+    } else if (error?.toString && error.toString() !== '[object Object]') {
+      errorMessage = error.toString();
+    }
+    
+    // Create a new error with the extracted message
+    const loginError = new Error(errorMessage);
+    (loginError as any).originalError = error;
+    throw loginError;
   }
 }
 
