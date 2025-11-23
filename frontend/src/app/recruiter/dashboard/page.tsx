@@ -57,9 +57,11 @@ function RecruiterDashboardContent() {
 
 export default function RecruiterDashboardPage() {
   return (
-    <Suspense fallback={<div className="min-h-screen bg-barnes-light-gray flex items-center justify-center">Laden...</div>}>
-      <RecruiterDashboardContent />
-    </Suspense>
+    <ProtectedRoute requiredRole="recruiter">
+      <Suspense fallback={<div className="min-h-screen bg-barnes-light-gray flex items-center justify-center">Laden...</div>}>
+        <RecruiterDashboardContent />
+      </Suspense>
+    </ProtectedRoute>
   );
 }
 

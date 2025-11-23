@@ -8,29 +8,32 @@ export async function POST(request: NextRequest) {
     const jobId = formData.get('job_id') as string;
     const limit = formData.get('limit') ? parseInt(formData.get('limit') as string) : 10;
 
-    if (!jobId) {
-      return NextResponse.json(
-        { error: 'job_id is required' },
-        { status: 400 }
-      );
+    // Get authorization header from the incoming request
+    const authHeader = request.headers.get('authorization') || request.headers.get('Authorization');
+    
+    const headers: HeadersInit = {
+      // Don't set Content-Type - FormData will set it with boundary
+    };
+    
+    // Forward authorization header if present
+    if (authHeader) {
+      headers['Authorization'] = authHeader;
     }
 
     const backendFormData = new FormData();
     backendFormData.append('job_id', jobId);
-    if (limit) {
-      backendFormData.append('limit', limit.toString());
-    }
+    backendFormData.append('limit', limit.toString());
 
     const response = await fetch(`${BACKEND_URL}/match-candidates`, {
       method: 'POST',
+      headers,
       body: backendFormData,
     });
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error('Backend error:', errorText);
       return NextResponse.json(
-        { error: 'Failed to match candidates', details: errorText },
+        { error: errorText || 'Failed to match candidates' },
         { status: response.status }
       );
     }
@@ -40,9 +43,8 @@ export async function POST(request: NextRequest) {
   } catch (error: any) {
     console.error('Error matching candidates:', error);
     return NextResponse.json(
-      { error: 'Failed to match candidates', details: error.message },
+      { error: error.message || 'Failed to match candidates' },
       { status: 500 }
     );
   }
 }
-

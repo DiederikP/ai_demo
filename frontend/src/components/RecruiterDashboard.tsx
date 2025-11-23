@@ -10,6 +10,8 @@ interface Vacancy {
   company: string;
   candidates_count: number;
   created_at: string;
+  is_new?: boolean;
+  is_assigned?: boolean;
 }
 
 interface Candidate {
@@ -29,6 +31,42 @@ export default function RecruiterDashboard() {
 
   useEffect(() => {
     loadData();
+    // Auto-refresh every 30 seconds to keep data up to date
+    const interval = setInterval(() => {
+      loadData();
+    }, 30000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Refresh when component becomes visible or URL changes
+  useEffect(() => {
+    const handleFocus = () => {
+      console.log('[RecruiterDashboard] Window focused, refreshing...');
+      loadData();
+    };
+    const handleLocationChange = () => {
+      console.log('[RecruiterDashboard] Location changed, refreshing...');
+      loadData();
+    };
+    const handleVisibilityChange = () => {
+      if (!document.hidden) {
+        console.log('[RecruiterDashboard] Page visible, refreshing...');
+        loadData();
+      }
+    };
+    // Refresh immediately on mount
+    console.log('[RecruiterDashboard] Component mounted, loading data...');
+    loadData();
+    
+    window.addEventListener('focus', handleFocus);
+    window.addEventListener('popstate', handleLocationChange);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+      window.removeEventListener('popstate', handleLocationChange);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
   }, []);
 
   const loadData = async () => {
@@ -41,7 +79,7 @@ export default function RecruiterDashboard() {
       console.log('[RecruiterDashboard] Token present:', !!headersObj['Authorization']);
       
       const [vacanciesRes, candidatesRes] = await Promise.all([
-        fetch('/api/recruiter/vacancies', { headers }).catch((err) => {
+        fetch('/api/recruiter/vacancies?include_new=true', { headers }).catch((err) => {
           console.error('[RecruiterDashboard] Fetch error for vacancies:', err);
           throw err;
         }),
@@ -56,19 +94,21 @@ export default function RecruiterDashboard() {
 
       if (vacanciesRes.ok) {
         const data = await vacanciesRes.json();
+        console.log('[RecruiterDashboard] Loaded vacancies:', data.vacancies?.length || 0, data.vacancies);
         setVacancies(data.vacancies || []);
       } else {
         const errorData = await vacanciesRes.json().catch(() => ({ error: 'Unknown error' }));
-        console.error('Failed to load vacancies:', errorData);
+        console.error('[RecruiterDashboard] Failed to load vacancies:', errorData);
         alert(`Fout bij laden vacatures: ${errorData.error || 'Onbekende fout'}`);
       }
 
       if (candidatesRes.ok) {
         const data = await candidatesRes.json();
+        console.log('[RecruiterDashboard] Loaded candidates:', data.candidates?.length || 0);
         setCandidates(data.candidates || []);
       } else {
         const errorData = await candidatesRes.json().catch(() => ({ error: 'Unknown error' }));
-        console.error('Failed to load candidates:', errorData);
+        console.error('[RecruiterDashboard] Failed to load candidates:', errorData);
       }
     } catch (error: any) {
       console.error('Error loading data:', error);
@@ -127,12 +167,32 @@ export default function RecruiterDashboard() {
                   className="flex items-center justify-between p-4 border border-gray-200 rounded-lg hover:border-barnes-violet transition-colors cursor-pointer"
                   onClick={() => router.push(`/recruiter/vacatures/${vacancy.id}`)}
                 >
-                  <div>
-                    <div className="font-medium text-barnes-dark-violet">{vacancy.title}</div>
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2 mb-1">
+                      <div className="font-medium text-barnes-dark-violet">{vacancy.title}</div>
+                      {vacancy.is_new && (
+                        <span className="px-2 py-0.5 text-xs rounded-full bg-blue-100 text-blue-800 font-medium">
+                          Nieuw
+                        </span>
+                      )}
+                      {vacancy.is_assigned && !vacancy.is_new && (
+                        <span className="px-2 py-0.5 text-xs rounded-full bg-green-100 text-green-800 font-medium">
+                          Toegewezen
+                        </span>
+                      )}
+                    </div>
                     <div className="text-sm text-gray-500">{vacancy.company}</div>
+                    {!vacancy.is_new && vacancy.candidates_count > 0 && (
+                      <div className="text-xs text-gray-400 mt-0.5">
+                        {vacancy.candidates_count} kandidaat{vacancy.candidates_count !== 1 ? 'en' : ''} ingediend
+                      </div>
+                    )}
                   </div>
                   <div className="text-right">
                     <div className="text-sm font-medium text-barnes-dark-gray">{vacancy.candidates_count} kandidaten</div>
+                    {vacancy.is_new && (
+                      <div className="text-xs text-blue-600 mt-0.5">Wacht op actie</div>
+                    )}
                   </div>
                 </div>
               ))}
@@ -153,21 +213,46 @@ export default function RecruiterDashboard() {
             </div>
           ) : (
             <div className="space-y-4">
-              {candidates.slice(0, 5).map((candidate) => (
-                <div
-                  key={candidate.id}
-                  className="flex items-center justify-between p-4 border border-gray-200 rounded-lg"
-                >
-                  <div>
-                    <div className="font-medium text-barnes-dark-violet">{candidate.name}</div>
-                    <div className="text-sm text-gray-500">{candidate.email}</div>
+              {candidates.slice(0, 5).map((candidate) => {
+                const hasEvaluation = (candidate as any).has_evaluation;
+                return (
+                  <div
+                    key={candidate.id}
+                    className="flex items-center justify-between p-4 border border-gray-200 rounded-lg hover:border-barnes-violet transition-colors cursor-pointer"
+                    onClick={() => router.push(`/recruiter/kandidaten/${candidate.id}`)}
+                  >
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2 mb-1">
+                        <div className="font-medium text-barnes-dark-violet">{candidate.name}</div>
+                        {hasEvaluation && (
+                          <span className="w-2 h-2 rounded-full bg-green-500" title="Geëvalueerd"></span>
+                        )}
+                      </div>
+                      <div className="text-sm text-gray-500">{candidate.email}</div>
+                      {candidate.job_id && (
+                        <div className="text-xs text-gray-400 mt-1">
+                          Vacature: {vacancies.find(v => v.id === candidate.job_id)?.title || 'Onbekend'}
+                        </div>
+                      )}
+                    </div>
+                    <div className="text-right">
+                      <div className="flex items-center gap-2 mb-1">
+                        {hasEvaluation ? (
+                          <span className="px-2 py-1 text-xs rounded-full bg-green-100 text-green-800 font-medium">
+                            ✓ Geëvalueerd
+                          </span>
+                        ) : (
+                          <span className="px-2 py-1 text-xs rounded-full bg-yellow-100 text-yellow-800 font-medium">
+                            ⏳ Wacht op evaluatie
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-xs text-gray-500">{candidate.pipeline_stage || 'Niet toegewezen'}</div>
+                      <div className="text-xs text-gray-400">{candidate.pipeline_status || 'Actief'}</div>
+                    </div>
                   </div>
-                  <div className="text-right">
-                    <div className="text-sm text-gray-500">{candidate.pipeline_stage || 'Niet toegewezen'}</div>
-                    <div className="text-xs text-gray-400">{candidate.pipeline_status || 'Actief'}</div>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>

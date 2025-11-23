@@ -21,11 +21,21 @@ export async function GET(request: NextRequest) {
       url += '?' + params.toString();
     }
 
+    // Get authorization header from the incoming request
+    const authHeader = request.headers.get('authorization') || request.headers.get('Authorization');
+    
+    const headers: HeadersInit = {
+      'Content-Type': 'application/json',
+    };
+    
+    // Forward authorization header if present
+    if (authHeader) {
+      headers['Authorization'] = authHeader;
+    }
+
     const response = await fetch(url, {
       method: 'GET',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers,
     });
 
     if (!response.ok) {

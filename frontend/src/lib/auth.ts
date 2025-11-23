@@ -99,6 +99,19 @@ export function getAuthHeaders(additionalHeaders: Record<string, string> = {}): 
 }
 
 /**
+ * Get auth headers without Content-Type (for FormData requests)
+ * Browser will automatically set Content-Type with boundary for FormData
+ */
+export function getAuthHeadersForFormData(): HeadersInit {
+  const token = getAuthToken();
+  const headers: HeadersInit = {};
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+  return headers;
+}
+
+/**
  * Login function - call the API and store tokens
  */
 export async function login(email: string, password: string): Promise<AuthResponse> {

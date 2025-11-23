@@ -107,6 +107,22 @@ export default function CompanyDashboard() {
     });
   }, []);
 
+  // Refresh when component becomes visible or URL changes
+  useEffect(() => {
+    const handleFocus = () => {
+      loadData();
+    };
+    const handleLocationChange = () => {
+      loadData();
+    };
+    window.addEventListener('focus', handleFocus);
+    window.addEventListener('popstate', handleLocationChange);
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+      window.removeEventListener('popstate', handleLocationChange);
+    };
+  }, []);
+
   // Auto-select both actions and all personas when they become available (make evaluation more intuitive)
   useEffect(() => {
     if (personas.length > 0 && selectedPersonas.length === 0) {
@@ -201,7 +217,10 @@ export default function CompanyDashboard() {
 
       if (jobsRes.ok) {
         const jobsData = await jobsRes.json();
+        console.log('[CompanyDashboard] Loaded jobs:', jobsData.jobs?.length || 0, jobsData.jobs);
         setJobs(jobsData.jobs || []);
+      } else {
+        console.error('[CompanyDashboard] Failed to load jobs:', jobsRes.status, jobsRes.statusText);
       }
 
       if (personasRes.ok) {
@@ -212,10 +231,15 @@ export default function CompanyDashboard() {
       if (candidatesRes.ok) {
         const candidateData = await candidatesRes.json();
         const fetchedCandidates = candidateData.candidates || [];
-        setAllCandidates(fetchedCandidates);
+        // Filter to show only recruiter-submitted candidates (have submitted_by_company_id)
+        // This ensures company only sees candidates proposed by recruiters
+        const recruiterCandidates = fetchedCandidates.filter((c: Candidate) => 
+          (c as any).submitted_by_company_id != null
+        );
+        setAllCandidates(recruiterCandidates);
         if (selectedJob) {
           setJobCandidates(
-            fetchedCandidates.filter((candidate: Candidate) =>
+            recruiterCandidates.filter((candidate: Candidate) =>
               doesCandidateMatchJob(candidate, selectedJob.id)
             )
           );
@@ -656,6 +680,7 @@ export default function CompanyDashboard() {
                 : step
             ));
             setCurrentWorkflowStep('Debat voltooid');
+            return resultId;
           } catch (error: any) {
             console.error('Debate error:', error);
             setReasoningSteps(prev => [...prev, {
@@ -665,13 +690,25 @@ export default function CompanyDashboard() {
               timestamp: new Date().toLocaleTimeString('nl-NL'),
               status: 'error' as const
             }]);
+            return null;
           }
         });
         
-        // Don't await debates - let them run in background
-        Promise.allSettled(debatePromises).then(() => {
-          setCurrentWorkflowStep('Alle taken voltooid');
+        // Wait for all debates to complete before checking results
+        const debateResults = await Promise.allSettled(debatePromises);
+        const debateResultIds = debateResults
+          .filter((r): r is PromiseFulfilledResult<string | null> => r.status === 'fulfilled')
+          .map(r => r.value)
+          .filter((id): id is string => id !== null);
+        
+        // Add debate result IDs to resultIds array
+        debateResultIds.forEach(id => {
+          if (!resultIds.includes(id)) {
+            resultIds.push(id);
+          }
         });
+        
+        setCurrentWorkflowStep('Alle taken voltooid');
       }
       
       // Update final reasoning step after all operations
@@ -725,16 +762,253 @@ export default function CompanyDashboard() {
       <div className="mb-8">
         <h1 className="text-3xl font-bold text-barnes-dark-violet mb-2">Nieuwe Evaluatie Configureren</h1>
         <p className="text-barnes-dark-gray">
-          Selecteer een vacature, kies de gewenste actie, selecteer kandidaten en voeg Digitale werknemers toe
+          Bekijk vacatures met kandidaten aangeboden door recruiters en start een evaluatie
         </p>
+      </div>
+
+      {/* New Vacancies Offered to Recruiters Section */}
+      {(() => {
+        const newVacancies = jobs.filter(job => {
+          const isActive = job.is_active !== false; // Default to true if not set
+          const notAssigned = !job.assigned_agency_id;
+          // Exclude jobs that have recruiter candidates (they should be in "Vacatures met Kandidaten")
+          const hasRecruiterCandidates = allCandidates.some(c => 
+            doesCandidateMatchJob(c, job.id) && (c as any).submitted_by_company_id != null
+          );
+          return isActive && notAssigned && !hasRecruiterCandidates;
+        });
+        
+        if (newVacancies.length === 0) return null;
+        
+        return (
+          <div className="bg-blue-50 border-2 border-blue-200 rounded-xl p-6 mb-6">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xl font-semibold text-barnes-dark-violet">
+                Nieuwe Vacatures Aangeboden aan Recruiters
+              </h2>
+              <span className="px-3 py-1 bg-blue-200 text-blue-800 text-sm font-medium rounded-full">
+                {newVacancies.length} nieuw
+              </span>
+            </div>
+            <div className="space-y-3">
+              {newVacancies.slice(0, 5).map(job => (
+                <div
+                  key={job.id}
+                  className="flex items-center justify-between p-4 bg-white rounded-lg border border-blue-200 hover:border-blue-400 transition-colors"
+                >
+                  <div>
+                    <div className="font-medium text-barnes-dark-violet">{job.title}</div>
+                    <div className="text-sm text-barnes-dark-gray">{job.company}</div>
+                    <div className="text-xs text-gray-500 mt-1">
+                      Aangemaakt: {new Date(job.created_at).toLocaleDateString('nl-NL')}
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => router.push(`/company/vacatures/${job.id}`)}
+                    className="px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                  >
+                    Bekijk
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Vacancies with Recruiter Candidates Section */}
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-xl font-semibold text-barnes-dark-violet">
+            Vacatures met Kandidaten van Recruiters
+          </h2>
+          <button
+            onClick={loadData}
+            className="px-4 py-2 text-sm bg-gray-100 text-barnes-dark-gray rounded-lg hover:bg-gray-200 transition-colors flex items-center gap-2"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+            Verversen
+          </button>
+        </div>
+        {jobs.length === 0 ? (
+          <div className="text-center py-8">
+            <p className="text-barnes-dark-gray text-sm mb-2">Geen vacatures beschikbaar</p>
+            <p className="text-xs text-gray-500">Wacht op vacatures van recruiters of maak een nieuwe vacature aan</p>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {(() => {
+              const jobsWithCandidates = jobs.filter(job => {
+                const jobCandidatesForJob = allCandidates.filter(c => doesCandidateMatchJob(c, job.id));
+                return jobCandidatesForJob.length > 0;
+              });
+              
+              if (jobsWithCandidates.length === 0) {
+                return (
+                  <div className="text-center py-8">
+                    <p className="text-barnes-dark-gray text-sm mb-2">Geen vacatures met kandidaten van recruiters</p>
+                    <p className="text-xs text-gray-500">Recruiters hebben nog geen kandidaten toegevoegd aan deze vacatures</p>
+                  </div>
+                );
+              }
+              
+              return jobsWithCandidates.map(job => {
+                const jobCandidatesForJob = allCandidates.filter(c => doesCandidateMatchJob(c, job.id));
+                const recruiterCandidatesCount = jobCandidatesForJob.length;
+              
+              return (
+                <div
+                  key={job.id}
+                  className={`p-4 border-2 rounded-lg cursor-pointer transition-colors ${
+                    selectedJob?.id === job.id
+                      ? 'border-barnes-violet bg-barnes-violet/5'
+                      : 'border-gray-200 hover:border-barnes-violet/50'
+                  }`}
+                  onClick={() => {
+                    setSelectedJob(job);
+                    // Auto-select first candidate when clicking on vacancy with candidates
+                    const firstCandidate = jobCandidatesForJob[0];
+                    if (firstCandidate) {
+                      setSelectedCandidates([firstCandidate.id]);
+                    } else {
+                      setSelectedCandidates([]);
+                    }
+                    setCandidateSearchTerm('');
+                  }}
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-3 mb-2">
+                        <h3 className="font-semibold text-barnes-dark-violet">{job.title}</h3>
+                        <span className="px-2 py-1 bg-blue-100 text-blue-800 text-xs rounded-full">
+                          {recruiterCandidatesCount} kandidaat{recruiterCandidatesCount !== 1 ? 'en' : ''} van recruiter{recruiterCandidatesCount !== 1 ? 's' : ''}
+                        </span>
+                      </div>
+                      <p className="text-sm text-gray-600 mb-2">{job.company}</p>
+                      <div className="flex items-center gap-4 text-xs text-gray-500">
+                        {job.location && <span>📍 {job.location}</span>}
+                        {job.salary_range && <span>💰 {job.salary_range}</span>}
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setSelectedJob(job);
+                          // Auto-select first candidate when clicking on vacancy with candidates
+                          const firstCandidate = jobCandidatesForJob[0];
+                          if (firstCandidate) {
+                            setSelectedCandidates([firstCandidate.id]);
+                          } else {
+                            setSelectedCandidates([]);
+                          }
+                          setCandidateSearchTerm('');
+                        }}
+                        className="px-4 py-2 bg-barnes-violet text-white rounded-lg hover:bg-barnes-dark-violet transition-colors text-sm"
+                      >
+                        {selectedJob?.id === job.id ? 'Geselecteerd' : 'Selecteer'}
+                      </button>
+                    </div>
+                  </div>
+                  
+                  {/* Show candidate preview */}
+                  {jobCandidatesForJob.length > 0 && (
+                    <div className="mt-3 pt-3 border-t border-gray-200">
+                      <p className="text-xs text-gray-500 mb-2">Kandidaten van recruiter:</p>
+                      <div className="flex flex-wrap gap-2">
+                        {jobCandidatesForJob.slice(0, 5).map(candidate => (
+                          <span
+                            key={candidate.id}
+                            className="px-2 py-1 bg-gray-100 text-gray-700 text-xs rounded"
+                          >
+                            {candidate.name}
+                          </span>
+                        ))}
+                        {jobCandidatesForJob.length > 5 && (
+                          <span className="px-2 py-1 bg-gray-100 text-gray-700 text-xs rounded">
+                            +{jobCandidatesForJob.length - 5} meer
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+              });
+            })()}
+          </div>
+        )}
       </div>
 
       {/* Validation Summary Card - Removed red box per user request */}
 
+      {/* Recent Candidates Section */}
+      {allCandidates.length > 0 && (
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-xl font-semibold text-barnes-dark-violet">Recente Kandidaten</h2>
+            <button
+              onClick={loadData}
+              className="px-4 py-2 text-sm bg-gray-100 text-barnes-dark-gray rounded-lg hover:bg-gray-200 transition-colors flex items-center gap-2"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+              </svg>
+              Verversen
+            </button>
+          </div>
+          <div className="space-y-3">
+            {allCandidates.slice(0, 5).map((candidate) => (
+              <div
+                key={candidate.id}
+                className="flex items-center justify-between p-4 border border-gray-200 rounded-lg hover:border-barnes-violet transition-colors"
+              >
+                <div>
+                  <div className="font-medium text-barnes-dark-violet">{candidate.name}</div>
+                  <div className="text-sm text-gray-500">{candidate.email}</div>
+                  {candidate.job_id && (
+                    <div className="text-xs text-gray-400 mt-1">
+                      {jobs.find(j => j.id === candidate.job_id)?.title || 'Onbekende vacature'}
+                    </div>
+                  )}
+                </div>
+                <div className="text-right">
+                  <div className="text-sm text-gray-500">{candidate.pipeline_stage || 'Niet toegewezen'}</div>
+                  <div className="text-xs text-gray-400">{candidate.pipeline_status || 'Actief'}</div>
+                </div>
+              </div>
+            ))}
+            {allCandidates.length > 5 && (
+              <div className="text-center pt-2">
+                <button
+                  onClick={() => router.push('/company/dashboard?module=kandidaten')}
+                  className="text-sm text-barnes-violet hover:underline"
+                >
+                  Bekijk alle {allCandidates.length} kandidaten →
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Main Focus: Handle Recruiter Vacancies */}
+      <div className="mb-6 p-6 bg-gradient-to-r from-barnes-violet/5 to-barnes-dark-violet/5 rounded-xl border-2 border-barnes-violet/20">
+        <h2 className="text-2xl font-bold text-barnes-dark-violet mb-2">Behandel Vacatures van Recruiters</h2>
+        <p className="text-barnes-dark-gray">
+          Selecteer een vacature met kandidaten van recruiters hierboven, kies je acties en start de evaluatie
+        </p>
+      </div>
+
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-        {/* Step 1: Select Vacature */}
+        {/* Step 1: Select Vacature - Simplified for Recruiter Workflow */}
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 md:p-6">
           <h2 className="text-xl font-semibold text-barnes-dark-violet mb-4">1. Selecteer Vacature</h2>
+          <p className="text-sm text-barnes-dark-gray mb-4">
+            Kies een vacature met kandidaten van recruiters (zie boven)
+          </p>
           <select
             value={selectedJob?.id || ''}
             onChange={(e) => {
@@ -762,14 +1036,17 @@ export default function CompanyDashboard() {
           )}
         </div>
 
-        {/* Step 2: Select Action */}
+        {/* Step 2: Select Action - Focused on Recruiter Candidate Evaluation */}
         <div className={`bg-white rounded-xl shadow-sm border-2 p-4 md:p-6 ${
           selectedActions.length > 0 ? 'border-barnes-violet' : 'border-gray-200'
         }`}>
           <h2 className="text-xl font-semibold text-barnes-dark-violet mb-4">
-            2. Selecteer Actie
+            2. Selecteer Actie voor Recruiter Kandidaten
             {selectedActions.length > 0 && <span className="ml-2 text-sm text-green-600">✓</span>}
           </h2>
+          <p className="text-sm text-barnes-dark-gray mb-4">
+            Kies hoe je de kandidaten van recruiters wilt beoordelen
+          </p>
           <div className="space-y-3">
             <label className="flex items-center gap-3 p-4 border-2 rounded-lg cursor-pointer hover:bg-gray-50 transition-colors">
               <input
@@ -1015,102 +1292,36 @@ export default function CompanyDashboard() {
           </h2>
           <div className="space-y-2 max-h-64 overflow-y-auto">
             {personas.map(persona => (
-              <label key={persona.id} className="flex items-center gap-3 p-3 hover:bg-gray-50 rounded-lg cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={selectedPersonas.includes(persona.id)}
-                  onChange={(e) => {
-                    if (e.target.checked) {
-                      setSelectedPersonas([...selectedPersonas, persona.id]);
-                    } else {
-                      setSelectedPersonas(selectedPersonas.filter(id => id !== persona.id));
-                    }
-                  }}
-                  className="w-5 h-5 text-barnes-violet focus:ring-barnes-violet rounded"
-                />
-                <span className="text-barnes-dark-gray">{persona.display_name}</span>
-              </label>
+              <div key={persona.id} className="flex items-center gap-3 p-3 hover:bg-gray-50 rounded-lg">
+                <label className="flex items-center gap-3 flex-1 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={selectedPersonas.includes(persona.id)}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        setSelectedPersonas([...selectedPersonas, persona.id]);
+                      } else {
+                        setSelectedPersonas(selectedPersonas.filter(id => id !== persona.id));
+                      }
+                    }}
+                    className="w-5 h-5 text-barnes-violet focus:ring-barnes-violet rounded"
+                  />
+                  <span className="text-barnes-dark-gray">{persona.display_name}</span>
+                </label>
+                <button
+                  onClick={() => router.push('/company/dashboard?module=personas')}
+                  className="px-3 py-1 text-xs text-barnes-violet hover:text-barnes-dark-violet hover:underline"
+                  title="Beheer digitale werknemer"
+                >
+                  Beheer →
+                </button>
+              </div>
             ))}
           </div>
         </div>
       </div>
 
-      {/* Company Note - Only show if Evalueer or Expert Debat is selected */}
-      {(selectedActions.includes('evaluate') || selectedActions.includes('debate')) && (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
-          <h2 className="text-xl font-semibold text-barnes-dark-violet mb-4">Bedrijfsnotitie</h2>
-          
-          {/* Option to use candidate's company note */}
-          {selectedCandidates.length > 0 && allCandidates.find(c => selectedCandidates.includes(c.id) && c.company_note) && (
-            <div className="mb-4 p-3 bg-barnes-orange/5 border border-barnes-orange/20 rounded-lg">
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={useCandidateCompanyNote}
-                  onChange={(e) => {
-                    setUseCandidateCompanyNote(e.target.checked);
-                    if (e.target.checked) {
-                      setCompanyNote('');
-                      setCompanyNoteFile(null);
-                    }
-                  }}
-                  className="w-4 h-4 text-barnes-violet border-gray-300 rounded focus:ring-barnes-violet"
-                />
-                <span className="text-sm text-barnes-dark-violet">
-                  Gebruik bedrijfsnotitie van leverancier (van kandidaat)
-                </span>
-              </label>
-              {useCandidateCompanyNote && selectedCandidates.length === 1 && (
-                <div className="mt-2 p-2 bg-white rounded border border-gray-200 text-xs text-barnes-dark-gray">
-                  {allCandidates.find(c => selectedCandidates.includes(c.id))?.company_note?.substring(0, 200)}
-                  {allCandidates.find(c => selectedCandidates.includes(c.id))?.company_note && allCandidates.find(c => selectedCandidates.includes(c.id))!.company_note!.length > 200 ? '...' : ''}
-                </div>
-              )}
-            </div>
-          )}
-          
-          {!useCandidateCompanyNote && (
-            <div className="space-y-4">
-            <textarea
-              value={companyNote}
-              onChange={(e) => {
-                setCompanyNote(e.target.value);
-                if (e.target.value) setCompanyNoteFile(null); // Clear file if text is entered
-              }}
-              placeholder="Voeg belangrijke informatie toe over de kandidaat (salaris, beschikbaarheid, etc.)"
-              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-barnes-violet focus:border-transparent min-h-32"
-            />
-            <div>
-              <label className="block text-sm font-medium text-barnes-dark-gray mb-2">
-                Of upload een bestand
-              </label>
-              <input
-                type="file"
-                accept=".pdf,.doc,.docx,.txt"
-                onChange={(e) => {
-                  const file = e.target.files?.[0];
-                  if (file) {
-                    setCompanyNoteFile(file);
-                    setCompanyNote(''); // Clear text if file selected
-                  }
-                }}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-barnes-violet file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-barnes-orange/10 file:text-barnes-orange hover:file:bg-barnes-orange/20"
-              />
-              {companyNoteFile && (
-                <div className="mt-3 p-3 bg-green-50 border border-green-200 rounded-lg">
-                  <div className="flex items-center gap-2 text-sm text-green-700">
-                    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-                      <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                    </svg>
-                    {companyNoteFile.name} geselecteerd
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-          )}
-        </div>
-      )}
+      {/* Company Note removed per user request */}
 
       {/* Templates & Start Button */}
       <div className="flex justify-between items-center gap-4">

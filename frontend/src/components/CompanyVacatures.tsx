@@ -62,16 +62,19 @@ export default function CompanyVacatures() {
       const { getAuthHeaders } = await import('../lib/auth');
       const companyParam = selectedCompany?.id ? `?company_id=${selectedCompany.id}` : '';
       const headers = getAuthHeaders();
+      console.log('[CompanyVacatures] Loading jobs with companyParam:', companyParam);
       const response = await fetch(`/api/job-descriptions${companyParam}`, { headers });
       if (response.ok) {
         const data = await response.json();
+        console.log('[CompanyVacatures] Loaded jobs:', data.jobs?.length || 0);
+        // Show ALL jobs (both active and inactive) - filtering happens in UI
         setJobs(data.jobs || []);
       } else {
         const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
-        console.error('Error loading jobs:', response.status, response.statusText, errorData);
+        console.error('[CompanyVacatures] Error loading jobs:', response.status, response.statusText, errorData);
       }
     } catch (error) {
-      console.error('Error loading jobs:', error);
+      console.error('[CompanyVacatures] Error loading jobs:', error);
     }
   }, [selectedCompany]);
 
@@ -143,6 +146,42 @@ export default function CompanyVacatures() {
 
   useEffect(() => {
     loadJobs();
+  }, [loadJobs]);
+
+  // Refresh when component becomes visible (e.g., navigating back from new vacancy page)
+  useEffect(() => {
+    const handleFocus = () => {
+      loadJobs();
+    };
+    window.addEventListener('focus', handleFocus);
+    return () => window.removeEventListener('focus', handleFocus);
+  }, [loadJobs]);
+
+  // Refresh when URL changes (e.g., navigating to this module)
+  useEffect(() => {
+    const handleLocationChange = () => {
+      loadJobs();
+    };
+    const handleVisibilityChange = () => {
+      if (!document.hidden) {
+        console.log('[CompanyVacatures] Page visible, refreshing...');
+        loadJobs();
+      }
+    };
+    // Refresh immediately when component mounts
+    console.log('[CompanyVacatures] Component mounted, loading jobs...');
+    handleLocationChange();
+    // Also listen for popstate (back/forward navigation)
+    window.addEventListener('popstate', handleLocationChange);
+    // Listen for custom refresh event
+    window.addEventListener('refresh-vacatures', handleLocationChange);
+    // Listen for visibility change
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      window.removeEventListener('popstate', handleLocationChange);
+      window.removeEventListener('refresh-vacatures', handleLocationChange);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
   }, [loadJobs]);
 
   useEffect(() => {
@@ -220,14 +259,18 @@ export default function CompanyVacatures() {
     try {
       const newStatus = currentStatus === 'active' ? false : true;
       
+      const { getAuthHeaders } = await import('../lib/auth');
+      const headers = getAuthHeaders();
+      
       const response = await fetch(`/api/job-descriptions/${jobId}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ is_active: newStatus })
       });
       
       if (!response.ok) {
-        throw new Error('Failed to update job status');
+        const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+        throw new Error(errorData.error || errorData.detail || 'Failed to update job status');
       }
       
       // Update local state
@@ -237,9 +280,9 @@ export default function CompanyVacatures() {
       setJobs(updatedJobs);
       
       await loadJobStats();
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error updating job status:', error);
-      alert('Kon vacature status niet bijwerken. Probeer het opnieuw.');
+      alert(`Kon vacature status niet bijwerken: ${error.message || 'Onbekende fout'}`);
     }
   };
 
@@ -530,7 +573,6 @@ export default function CompanyVacatures() {
           {/* Active Vacancies */}
           {(() => {
             const activeJobs = filteredJobs.filter(job => getJobStatus(job) === 'active');
-            if (activeJobs.length === 0) return null;
             
             return (
               <section 
@@ -549,15 +591,19 @@ export default function CompanyVacatures() {
                   </h2>
                   <p className="text-sm text-barnes-dark-gray">Vacatures die momenteel open staan en actief worden beoordeeld</p>
                 </div>
-                <div className={`grid gap-3 md:gap-4 ${
-                  activeJobs.length <= 5 
-                    ? 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3'
-                    : activeJobs.length <= 10
-                    ? 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-4'
-                    : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-5'
-                }`}>
-                  {activeJobs.map(job => renderJobCard(job))}
-                </div>
+                {activeJobs.length > 0 ? (
+                  <div className={`grid gap-3 md:gap-4 ${
+                    activeJobs.length <= 5 
+                      ? 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3'
+                      : activeJobs.length <= 10
+                      ? 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-4'
+                      : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-5'
+                  }`}>
+                    {activeJobs.map(job => renderJobCard(job))}
+                  </div>
+                ) : (
+                  <p className="text-sm text-barnes-dark-gray italic">Geen actieve vacatures</p>
+                )}
               </section>
             );
           })()}
@@ -565,7 +611,6 @@ export default function CompanyVacatures() {
           {/* Inactive Vacatures */}
           {(() => {
             const inactiveJobs = filteredJobs.filter(job => getJobStatus(job) === 'inactive');
-            if (inactiveJobs.length === 0) return null;
             
             return (
               <section 
@@ -584,15 +629,19 @@ export default function CompanyVacatures() {
                   </h2>
                   <p className="text-sm text-barnes-dark-gray">Gesloten of gepauzeerde vacatures</p>
                 </div>
-                <div className={`grid gap-3 md:gap-4 ${
-                  inactiveJobs.length <= 5 
-                    ? 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3'
-                    : inactiveJobs.length <= 10
-                    ? 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-4'
-                    : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-5'
-                }`}>
-                  {inactiveJobs.map(job => renderJobCard(job))}
-                </div>
+                {inactiveJobs.length > 0 ? (
+                  <div className={`grid gap-3 md:gap-4 ${
+                    inactiveJobs.length <= 5 
+                      ? 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3'
+                      : inactiveJobs.length <= 10
+                      ? 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-4'
+                      : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-5'
+                  }`}>
+                    {inactiveJobs.map(job => renderJobCard(job))}
+                  </div>
+                ) : (
+                  <p className="text-sm text-barnes-dark-gray italic">Geen inactieve vacatures</p>
+                )}
               </section>
             );
           })()}

@@ -4,6 +4,7 @@ openai==2.5.0
 python-dotenv==1.1.1
 pydantic[email]==2.12.3
 PyPDF2==3.0.1
+PyMuPDF>=1.23.0
 sqlalchemy>=2.0.36
 psycopg2-binary>=2.9.0
 python-multipart==0.0.6
@@ -12,3 +13,6 @@ python-docx==0.8.11
 bcrypt==4.0.1
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
+python-dateutil==2.9.0
+langchain-openai>=0.2.0
+langchain-core>=0.3.0

@@ -23,7 +23,7 @@ export default function CompanyResults() {
   const router = useRouter();
   const [results, setResults] = useState<EvaluationResult[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [filterType, setFilterType] = useState<'all' | 'evaluation' | 'debate'>('all');
+  const [activeTab, setActiveTab] = useState<'all' | 'evaluation' | 'debate'>('all');
   const [filterJob, setFilterJob] = useState<string>('');
   const [jobs, setJobs] = useState<any[]>([]);
   const [candidatesMap, setCandidatesMap] = useState<Record<string, string>>({});
@@ -32,7 +32,10 @@ export default function CompanyResults() {
 
   useEffect(() => {
     // Load jobs and candidates in parallel for better performance
-    Promise.all([loadJobs(), loadCandidates()]);
+    Promise.all([loadJobs(), loadCandidates()]).then(() => {
+      // Auto-load results after jobs and candidates are loaded
+      loadResults();
+    });
   }, []);
 
   useEffect(() => {
@@ -40,7 +43,7 @@ export default function CompanyResults() {
       return;
     }
     loadResults();
-  }, [filterType, filterJob, jobs, candidatesLoaded]);
+  }, [activeTab, filterJob, jobs, candidatesLoaded]);
 
   const loadJobs = async () => {
     try {
@@ -79,10 +82,13 @@ export default function CompanyResults() {
   const loadResults = async () => {
     setIsLoading(true);
     try {
+      const { getAuthHeaders } = await import('../lib/auth');
+      const headers = getAuthHeaders();
+      
       let url = '/api/evaluation-results';
       const params = new URLSearchParams();
-      if (filterType !== 'all') {
-        params.append('result_type', filterType);
+      if (activeTab !== 'all') {
+        params.append('result_type', activeTab);
       }
       if (filterJob) {
         params.append('job_id', filterJob);
@@ -94,7 +100,7 @@ export default function CompanyResults() {
         url += '?' + params.toString();
       }
 
-      const response = await fetch(url);
+      const response = await fetch(url, { headers });
       if (response.ok) {
         const data = await response.json();
         const jobMap = jobs.reduce<Record<string, any>>((acc, job) => {
@@ -198,7 +204,7 @@ export default function CompanyResults() {
   const filteredResults = useMemo(() => {
     return results.filter(result => {
       // Basic filters
-      if (filterType !== 'all' && result.result_type !== filterType) {
+      if (activeTab !== 'all' && result.result_type !== activeTab) {
         return false;
       }
       if (filterJob && result.job_id !== filterJob) {
@@ -240,7 +246,7 @@ export default function CompanyResults() {
       
       return true;
     });
-  }, [results, filterType, filterJob, advancedFilters]);
+  }, [results, activeTab, filterJob, advancedFilters]);
 
   const resultsByJob: Record<string, EvaluationResult[]> = {};
   filteredResults.forEach(result => {
@@ -301,45 +307,68 @@ export default function CompanyResults() {
         </div>
       </div>
 
-      {/* Filters */}
+      {/* Tabs */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
-        <div className="flex flex-col md:flex-row gap-4 items-end">
-          <div className="flex-1">
-            <label className="block text-sm font-medium text-barnes-dark-gray mb-2">
-              Selecteer Vacature
-            </label>
-            <select
-              value={filterJob}
-              onChange={(e) => setFilterJob(e.target.value)}
-              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-barnes-violet text-barnes-dark-violet font-medium"
+        <div className="flex flex-col gap-4">
+          {/* Tab Navigation */}
+          <div className="flex border-b border-gray-200">
+            <button
+              onClick={() => setActiveTab('all')}
+              className={`px-6 py-3 font-medium transition-colors border-b-2 ${
+                activeTab === 'all'
+                  ? 'border-barnes-violet text-barnes-violet'
+                  : 'border-transparent text-barnes-dark-gray hover:text-barnes-violet'
+              }`}
             >
-              <option value="">Alle vacatures</option>
-              {jobs.map(job => (
-                <option key={job.id} value={job.id}>
-                  {job.title} - {job.company}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="w-full md:w-auto">
-            <label className="block text-sm font-medium text-barnes-dark-gray mb-2">
-              Type
-            </label>
-            <select
-              value={filterType}
-              onChange={(e) => setFilterType(e.target.value as any)}
-              className="w-full md:w-48 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-barnes-violet"
+              Alle ({summaryStats.total})
+            </button>
+            <button
+              onClick={() => setActiveTab('evaluation')}
+              className={`px-6 py-3 font-medium transition-colors border-b-2 ${
+                activeTab === 'evaluation'
+                  ? 'border-barnes-violet text-barnes-violet'
+                  : 'border-transparent text-barnes-dark-gray hover:text-barnes-violet'
+              }`}
             >
-              <option value="all">Alle</option>
-              <option value="evaluation">Evaluaties</option>
-              <option value="debate">Debatten</option>
-            </select>
+              Evaluaties ({summaryStats.evaluations})
+            </button>
+            <button
+              onClick={() => setActiveTab('debate')}
+              className={`px-6 py-3 font-medium transition-colors border-b-2 ${
+                activeTab === 'debate'
+                  ? 'border-barnes-violet text-barnes-violet'
+                  : 'border-transparent text-barnes-dark-gray hover:text-barnes-violet'
+              }`}
+            >
+              Debatten ({summaryStats.debates})
+            </button>
           </div>
-          <div className="w-full md:w-auto">
-            <AdvancedFilter
-              onFilterChange={setAdvancedFilters}
-              jobs={jobs.map(j => ({ id: j.id, title: j.title }))}
-            />
+
+          {/* Filters */}
+          <div className="flex flex-col md:flex-row gap-4 items-end">
+            <div className="flex-1">
+              <label className="block text-sm font-medium text-barnes-dark-gray mb-2">
+                Selecteer Vacature
+              </label>
+              <select
+                value={filterJob}
+                onChange={(e) => setFilterJob(e.target.value)}
+                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-barnes-violet text-barnes-dark-violet font-medium"
+              >
+                <option value="">Alle vacatures</option>
+                {jobs.map(job => (
+                  <option key={job.id} value={job.id}>
+                    {job.title} - {job.company}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="w-full md:w-auto">
+              <AdvancedFilter
+                onFilterChange={setAdvancedFilters}
+                jobs={jobs.map(j => ({ id: j.id, title: j.title }))}
+              />
+            </div>
           </div>
         </div>
       </div>
@@ -461,8 +490,32 @@ export default function CompanyResults() {
                                 )}
                                 {companyNote && (
                                   <div className="p-2 rounded-lg bg-barnes-orange/10 border border-barnes-orange/30 text-xs text-barnes-dark-violet mb-2">
-                                    <p className="font-semibold text-[10px] uppercase mb-0.5">Bedrijfsnotitie</p>
-                                    <p className="line-clamp-2">{companyNote}</p>
+                                    <p className="font-semibold text-[10px] uppercase mb-1">Bedrijfsnotitie (van recruiter)</p>
+                                    <p className="line-clamp-2 mb-2">{companyNote}</p>
+                                    {evalResult.selected_personas && evalResult.selected_personas.length > 0 && (
+                                      <div className="mt-2 pt-2 border-t border-barnes-orange/20">
+                                        <p className="text-[10px] text-barnes-dark-gray mb-1">Digitale werknemers die hierop hebben gereageerd:</p>
+                                        <div className="flex flex-wrap gap-1">
+                                          {evalResult.selected_personas.map((persona: string) => {
+                                            const personaNames: Record<string, string> = {
+                                              'hiring_manager': 'Hiring Manager',
+                                              'bureaurecruiter': 'Bureaurecruiter',
+                                              'hr_recruiter': 'HR / Inhouse Recruiter',
+                                              'finance_director': 'Finance Director',
+                                              'tech_lead': 'Tech Lead'
+                                            };
+                                            return (
+                                              <span
+                                                key={persona}
+                                                className="px-1.5 py-0.5 text-[10px] rounded bg-barnes-violet/20 text-barnes-violet font-medium"
+                                              >
+                                                {personaNames[persona] || persona}
+                                              </span>
+                                            );
+                                          })}
+                                        </div>
+                                      </div>
+                                    )}
                                   </div>
                                 )}
                                 {/* Show debate indicator if debate exists */}

@@ -6,7 +6,7 @@ import { useAuth } from '../contexts/AuthContext';
 
 interface ProtectedRouteProps {
   children: React.ReactNode;
-  requiredRole?: 'admin' | 'recruiter' | 'viewer' | 'user';
+  requiredRole?: 'admin' | 'recruiter' | 'viewer' | 'user' | 'company_admin' | 'company_user' | 'candidate';
   fallback?: React.ReactNode;
 }
 
@@ -49,17 +49,25 @@ export default function ProtectedRoute({
   // Check role if required
   if (requiredRole && user) {
     const userRole = user.role?.toLowerCase();
-    const roleHierarchy: Record<string, number> = {
-      'admin': 3,
-      'recruiter': 2,
-      'viewer': 1,
-      'user': 0,
+    
+    // Admin can access everything
+    if (userRole === 'admin') {
+      return <>{children}</>;
+    }
+    
+    // Role-based access control
+    const roleAccess: Record<string, string[]> = {
+      'admin': ['admin'],
+      'recruiter': ['recruiter', 'admin'],
+      'company_admin': ['company_admin', 'admin'],
+      'company_user': ['company_user', 'company_admin', 'admin'],
+      'candidate': ['candidate', 'admin'],
+      'viewer': ['viewer', 'admin'],
+      'user': ['user', 'company_user', 'company_admin', 'admin'],
     };
     
-    const requiredLevel = roleHierarchy[requiredRole] || 0;
-    const userLevel = roleHierarchy[userRole] || 0;
-    
-    if (userLevel < requiredLevel) {
+    const allowedRoles = roleAccess[requiredRole] || [];
+    if (!allowedRoles.includes(userRole)) {
       return (
         <div className="min-h-screen flex items-center justify-center bg-barnes-light-gray">
           <div className="text-center bg-white rounded-xl p-8 border border-gray-200 shadow-lg max-w-md mx-4">

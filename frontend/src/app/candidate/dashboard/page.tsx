@@ -1,8 +1,9 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, Suspense } from 'react';
 import { useRouter } from 'next/navigation';
 import ProtectedRoute from '../../../components/ProtectedRoute';
+import CandidateNavigation from '../../../components/CandidateNavigation';
 import { useAuth } from '../../../contexts/AuthContext';
 import { getAuthHeaders } from '../../../lib/auth';
 
@@ -18,6 +19,9 @@ interface Application {
   created_at: string;
   evaluation_count?: number;
   conversation_count?: number;
+  submitted_by_company_id?: string;
+  submitted_by_company_name?: string;
+  company_note?: string;
 }
 
 interface TargetedJob {
@@ -78,6 +82,9 @@ function CandidateDashboardContent() {
               created_at: candidate.created_at,
               evaluation_count: candidate.evaluation_count || 0,
               conversation_count: candidate.conversation_count || 0,
+              submitted_by_company_id: (candidate as any).submitted_by_company_id,
+              submitted_by_company_name: (candidate as any).submitted_by_company_name,
+              company_note: candidate.company_note,
             });
           });
         });
@@ -162,9 +169,16 @@ function CandidateDashboardContent() {
     return stageColors[stage] || 'bg-gray-100 text-gray-800';
   };
 
+  const [isNavCollapsed, setIsNavCollapsed] = useState(false);
+
   return (
-    <div className="min-h-screen bg-gray-50 p-8">
-      <div className="max-w-7xl mx-auto">
+    <div className="min-h-screen bg-gray-50">
+      <CandidateNavigation onCollapsedChange={setIsNavCollapsed} />
+      <div 
+        className="transition-all duration-300 p-4 md:p-8 min-h-screen"
+        style={{ marginLeft: isNavCollapsed ? '4rem' : '16rem' }}
+      >
+        <div className="max-w-7xl mx-auto">
         <div className="flex items-center justify-between mb-8">
           <h1 className="text-3xl font-bold text-barnes-dark-violet">
             Mijn Sollicitaties
@@ -197,10 +211,27 @@ function CandidateDashboardContent() {
                 <div key={app.id} className="border border-gray-200 rounded-lg p-4 hover:border-barnes-violet transition-colors">
                   <div className="flex justify-between items-start mb-3">
                     <div className="flex-1">
-                      <h3 className="font-semibold text-barnes-dark-violet text-lg mb-1">{app.job_title}</h3>
+                      <div className="flex items-center gap-2 mb-1">
+                        <h3 className="font-semibold text-barnes-dark-violet text-lg">{app.job_title}</h3>
+                        {app.submitted_by_company_id && (
+                          <span className="px-2 py-1 bg-blue-100 text-blue-800 text-xs rounded-full">
+                            Voorgesteld door recruiter
+                          </span>
+                        )}
+                      </div>
                       <p className="text-sm text-barnes-dark-gray mb-2">{app.company}</p>
                       {app.location && (
-                        <p className="text-xs text-gray-500">📍 {app.location}</p>
+                        <p className="text-xs text-gray-500 mb-1">📍 {app.location}</p>
+                      )}
+                      {app.submitted_by_company_name && (
+                        <p className="text-xs text-blue-600 mb-1">
+                          📋 Recruiter: {app.submitted_by_company_name}
+                        </p>
+                      )}
+                      {app.company_note && (
+                        <div className="mt-2 p-2 bg-gray-50 rounded text-xs text-gray-600">
+                          <strong>Notitie van recruiter:</strong> {app.company_note}
+                        </div>
                       )}
                     </div>
                     <span className={`px-3 py-1 rounded-full text-sm font-medium ${getStatusColor(app.pipeline_stage, app.pipeline_status)}`}>
@@ -208,12 +239,29 @@ function CandidateDashboardContent() {
                     </span>
                   </div>
                   
-                  <div className="flex items-center gap-4 text-xs text-barnes-dark-gray pt-3 border-t border-gray-100">
-                    <span>{app.evaluation_count || 0} evaluatie(s)</span>
-                    <span>{app.conversation_count || 0} gesprek(ken)</span>
-                    <span className="ml-auto">
-                      Aangemeld: {new Date(app.created_at).toLocaleDateString('nl-NL')}
-                    </span>
+                  <div className="mt-3 pt-3 border-t border-gray-100">
+                    <div className="flex items-center gap-4 text-xs text-barnes-dark-gray mb-2">
+                      <span>📊 {app.evaluation_count || 0} evaluatie(s)</span>
+                      <span>💬 {app.conversation_count || 0} gesprek(ken)</span>
+                      <span className="ml-auto">
+                        Aangemeld: {new Date(app.created_at).toLocaleDateString('nl-NL')}
+                      </span>
+                    </div>
+                    {/* Progress indicator */}
+                    <div className="mt-2">
+                      <div className="flex items-center gap-1 text-xs text-gray-500">
+                        <span>Voortgang:</span>
+                        <div className="flex-1 h-2 bg-gray-200 rounded-full overflow-hidden">
+                          <div 
+                            className="h-full bg-barnes-violet transition-all duration-300"
+                            style={{ 
+                              width: `${Math.min(100, ((['introduced', 'review', 'first_interview', 'second_interview', 'offer', 'complete'].indexOf(app.pipeline_stage) + 1) / 6) * 100)}%` 
+                            }}
+                          />
+                        </div>
+                        <span className="text-xs">{Math.round(((['introduced', 'review', 'first_interview', 'second_interview', 'offer', 'complete'].indexOf(app.pipeline_stage) + 1) / 6) * 100)}%</span>
+                      </div>
+                    </div>
                   </div>
                 </div>
               ))}
@@ -263,6 +311,7 @@ function CandidateDashboardContent() {
             </div>
           )}
         </div>
+        </div>
       </div>
     </div>
   );
@@ -271,7 +320,9 @@ function CandidateDashboardContent() {
 export default function CandidateDashboard() {
   return (
     <ProtectedRoute>
-      <CandidateDashboardContent />
+      <Suspense fallback={<div className="min-h-screen bg-gray-50 flex items-center justify-center">Laden...</div>}>
+        <CandidateDashboardContent />
+      </Suspense>
     </ProtectedRoute>
   );
 }

@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import Header from '../../../components/Header';
 import { useAuth } from '../../../contexts/AuthContext';
 
-export default function CompanyLogin() {
+export default function CandidateLogin() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -18,14 +18,17 @@ export default function CompanyLogin() {
       // Small delay to prevent immediate redirect (allows user to see login page if needed)
       const timer = setTimeout(() => {
         const role = user.role?.toLowerCase();
-        if (role === 'admin' || role === 'company_admin' || role === 'company_user') {
-          router.push('/company/dashboard');
+        // Prioritize candidate portal for candidate users
+        if (role === 'candidate') {
+          router.push('/candidate/dashboard');
+        } else if (role === 'admin') {
+          router.push('/company/dashboard'); // Admin can choose
         } else if (role === 'recruiter') {
           router.push('/recruiter/dashboard');
-        } else if (role === 'candidate') {
-          router.push('/candidate/dashboard');
-        } else {
+        } else if (role === 'company_admin' || role === 'company_user') {
           router.push('/company/dashboard');
+        } else {
+          router.push('/candidate/dashboard');
         }
       }, 500); // 500ms delay
       return () => clearTimeout(timer);
@@ -42,14 +45,14 @@ export default function CompanyLogin() {
     }
 
     try {
-      console.log('[Login Page] Attempting login...');
+      console.log('[Candidate Login Page] Attempting login...');
       await login(email, password);
-      console.log('[Login Page] Login successful, redirecting...');
+      console.log('[Candidate Login Page] Login successful, redirecting...');
       
       // Wait a moment for auth context to update
       await new Promise(resolve => setTimeout(resolve, 100));
       
-      // Refresh user from context after login
+      // Fetch updated user from API to get the most current role
       const updatedUser = await fetch('/api/auth/me', {
         headers: {
           'Authorization': `Bearer ${localStorage.getItem('auth_token')}`
@@ -57,21 +60,23 @@ export default function CompanyLogin() {
       }).then(res => res.json()).catch(() => null);
       
       const role = updatedUser?.role?.toLowerCase() || user?.role?.toLowerCase();
-      console.log('[Company Login Page] User role:', role);
+      console.log('[Candidate Login Page] User role:', role);
       
-      // Redirect based on role - prioritize company portal for company users
-      if (role === 'admin' || role === 'company_admin' || role === 'company_user') {
-        router.push('/company/dashboard');
+      // Redirect based on role - prioritize candidate portal for candidate users
+      if (role === 'candidate') {
+        router.push('/candidate/dashboard');
+      } else if (role === 'admin') {
+        router.push('/company/dashboard'); // Admin can choose
       } else if (role === 'recruiter') {
         router.push('/recruiter/dashboard');
-      } else if (role === 'candidate') {
-        router.push('/candidate/dashboard');
-      } else {
+      } else if (role === 'company_admin' || role === 'company_user') {
         router.push('/company/dashboard');
+      } else {
+        router.push('/candidate/dashboard');
       }
     } catch (err: any) {
-      console.error('[Login Page] Login error:', err);
-      console.error('[Login Page] Error details:', {
+      console.error('[Candidate Login Page] Login error:', err);
+      console.error('[Candidate Login Page] Error details:', {
         message: err.message,
         stack: err.stack,
         name: err.name,
@@ -104,10 +109,10 @@ export default function CompanyLogin() {
         <div className="bg-white rounded-2xl shadow-xl p-8 border border-gray-200">
           <div className="text-center mb-8">
             <div className="w-16 h-16 rounded-full bg-barnes-orange flex items-center justify-center mx-auto mb-4">
-              <span className="text-white font-bold text-2xl">B</span>
+              <span className="text-white font-bold text-2xl">C</span>
             </div>
-            <h1 className="text-3xl font-bold text-barnes-dark-violet mb-2">Company Login</h1>
-            <p className="text-barnes-dark-gray">Access your company dashboard</p>
+            <h1 className="text-3xl font-bold text-barnes-dark-violet mb-2">Candidate Login</h1>
+            <p className="text-barnes-dark-gray">Access your candidate dashboard</p>
           </div>
 
           {error && (
@@ -129,7 +134,7 @@ export default function CompanyLogin() {
                 required
                 disabled={isLoading}
                 className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-barnes-violet focus:border-transparent disabled:opacity-50 disabled:cursor-not-allowed"
-                placeholder="company@example.com"
+                placeholder="candidate@example.com"
               />
             </div>
 

@@ -30,9 +30,27 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
+    
+    // Get authorization header from the incoming request
+    const authHeader = request.headers.get('authorization') || request.headers.get('Authorization');
+    
+    console.log('[upload-job API] Auth header present:', !!authHeader);
+    
+    const headers: HeadersInit = {
+      'Content-Type': 'application/json',
+    };
+    
+    // Forward authorization header if present
+    if (authHeader) {
+      headers['Authorization'] = authHeader;
+      console.log('[upload-job API] Forwarding auth header to backend');
+    } else {
+      console.warn('[upload-job API] No auth header found in request');
+    }
+    
     const backendResponse = await fetch(`${BACKEND_URL}/upload-job-description`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify(body)
     });
 

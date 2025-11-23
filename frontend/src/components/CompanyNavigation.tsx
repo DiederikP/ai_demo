@@ -4,9 +4,9 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import GlobalSearch from './GlobalSearch';
 import NotificationCenter from './NotificationCenter';
-import PortalSelector from './CompanySelector';
 import { useAuth } from '../contexts/AuthContext';
 import { usePermissions } from '../hooks/usePermissions';
+import { getAuthHeaders } from '../lib/auth';
 
 interface CompanyNavigationProps {
   activeModule: 'dashboard' | 'vacatures' | 'personas' | 'kandidaten' | 'resultaten';
@@ -157,7 +157,7 @@ export default function CompanyNavigation({ activeModule, onModuleChange, onColl
     }
   };
 
-  // Initialize current user or prompt for account setup
+  // Initialize current user - show active users in sandbox, don't prompt for account creation
   useEffect(() => {
     const initUser = async () => {
       const storedUserId = localStorage.getItem('current_user_id');
@@ -183,14 +183,20 @@ export default function CompanyNavigation({ activeModule, onModuleChange, onColl
         }
       }
 
-      setIsAccountModalOpen(true);
+      // Don't show account modal - just use current auth user if available
+      if (user) {
+        setAccountEmail(user.email);
+        setAccountName(user.name);
+        setCurrentUserId(user.id);
+      }
     };
 
     initUser();
-  }, []);
+  }, [user]);
 
   const loadUnreadCount = (userId: string) => {
-    fetch(`/api/notifications?user_id=${userId}&unread_only=true`)
+    const headers = getAuthHeaders();
+    fetch(`/api/notifications?user_id=${userId}&unread_only=true`, { headers })
       .then(res => res.json())
       .then(data => {
         if (data.success) {
@@ -206,6 +212,7 @@ export default function CompanyNavigation({ activeModule, onModuleChange, onColl
         { id: 'personas' as const, label: 'Digitale Werknemers', icon: '👥' },
         { id: 'kandidaten' as const, label: 'Kandidaten', icon: '📄' },
         { id: 'resultaten' as const, label: 'Resultaten', icon: '📋' },
+        { id: 'notifications' as const, label: 'Notificaties', icon: '🔔' },
       ];
 
   return (
@@ -242,25 +249,7 @@ export default function CompanyNavigation({ activeModule, onModuleChange, onColl
           '--nav-width': isCollapsed ? '4rem' : '16rem'
         } as React.CSSProperties}
       >
-      {/* Portal Selector - Top of screen */}
-      <div className="p-4 border-b border-gray-200 bg-gray-50">
-        {!isCollapsed && (
-          <PortalSelector />
-        )}
-        {isCollapsed && (
-          <div className="flex justify-center">
-            <button
-              onClick={() => setIsCollapsed(false)}
-              className="w-8 h-8 rounded-lg border border-gray-200 text-barnes-dark-gray flex items-center justify-center hover:border-barnes-violet transition-colors"
-              title="Omgeving selecteren"
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
-              </svg>
-            </button>
-          </div>
-        )}
-      </div>
+      {/* Removed Portal Selector from top - portals now in sidepane */}
       
       <div className="p-4 border-b border-gray-200">
         <div className="flex items-center justify-between gap-2">
@@ -296,7 +285,10 @@ export default function CompanyNavigation({ activeModule, onModuleChange, onColl
           )}
           <div className="flex items-center gap-2">
             <button
-              onClick={() => setIsNotificationOpen(true)}
+              onClick={() => {
+                onModuleChange('notifications');
+                setIsNotificationOpen(false);
+              }}
               className="relative w-9 h-9 rounded-full border border-gray-200 text-barnes-dark-gray flex items-center justify-center hover:border-barnes-violet transition-colors"
               aria-label="Notificaties"
             >
@@ -334,21 +326,22 @@ export default function CompanyNavigation({ activeModule, onModuleChange, onColl
           </div>
         )}
         {modules.map((module) => (
-          <button
-            key={module.id}
-            onClick={() => {
-              onModuleChange(module.id);
-              setIsMobileMenuOpen(false);
-            }}
-            className={`w-full flex items-center gap-3 px-4 py-3 text-left transition-colors ${
-              activeModule === module.id
-                ? 'bg-barnes-violet/10 text-barnes-violet border-r-2 border-barnes-violet'
-                : 'text-barnes-dark-gray hover:bg-gray-50'
-            }`}
-          >
-            <span className="text-xl">{module.icon}</span>
-            {!isCollapsed && <span className="font-medium">{module.label}</span>}
-          </button>
+          <div key={module.id}>
+            <button
+              onClick={() => {
+                onModuleChange(module.id);
+                setIsMobileMenuOpen(false);
+              }}
+              className={`w-full flex items-center gap-3 px-4 py-3 text-left transition-colors ${
+                activeModule === module.id
+                  ? 'bg-barnes-violet/10 text-barnes-violet border-r-2 border-barnes-violet'
+                  : 'text-barnes-dark-gray hover:bg-gray-50'
+              }`}
+            >
+              <span className="text-xl">{module.icon}</span>
+              {!isCollapsed && <span className="font-medium">{module.label}</span>}
+            </button>
+          </div>
         ))}
       </div>
 
@@ -419,76 +412,7 @@ export default function CompanyNavigation({ activeModule, onModuleChange, onColl
       )}
       </nav>
 
-      {isAccountModalOpen && (
-        <div className="fixed inset-0 z-[999] flex items-center justify-center bg-black/60 px-4">
-          <form
-            onSubmit={handleAccountSubmit}
-            className="w-full max-w-md bg-white rounded-2xl shadow-2xl p-6 space-y-4"
-          >
-            <div className="space-y-1">
-              <p className="text-xs uppercase tracking-widest text-barnes-dark-gray/70">Omgeving</p>
-              <h3 className="text-2xl font-semibold text-barnes-dark-violet">
-                Kies of maak een bedrijfsomgeving
-              </h3>
-              <p className="text-sm text-barnes-dark-gray">
-                Iedereen met hetzelfde e-maildomein deelt automatisch dezelfde omgeving. Later kun je een paywall
-                toevoegen voor betaalde accounts.
-              </p>
-            </div>
-
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-barnes-dark-gray">Naam</label>
-              <input
-                type="text"
-                value={accountName}
-                onChange={(e) => setAccountName(e.target.value)}
-                className="w-full border border-gray-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-barnes-violet focus:border-transparent"
-                placeholder="Voor- en achternaam"
-              />
-            </div>
-
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-barnes-dark-gray">Zakelijk e-mailadres</label>
-              <input
-                type="email"
-                value={accountEmail}
-                onChange={(e) => setAccountEmail(e.target.value)}
-                className="w-full border border-gray-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-barnes-violet focus:border-transparent"
-                placeholder="naam@bedrijf.nl"
-                required
-              />
-            </div>
-
-            <div className="text-xs text-barnes-dark-gray bg-barnes-violet/5 border border-barnes-violet/20 rounded-lg p-3">
-              Tip: maak accounts aan voor collega's (bijv. vaatje@zuljehemhebben.nl en diederik@zuljehemhebben.nl)
-              om dezelfde bedrijfssandbox te delen.
-            </div>
-
-            {accountError && (
-              <p className="text-sm text-red-600">{accountError}</p>
-            )}
-
-            <div className="flex items-center justify-end gap-3 pt-2">
-              {currentUserId && (
-                <button
-                  type="button"
-                  onClick={() => setIsAccountModalOpen(false)}
-                  className="px-4 py-2 text-sm text-barnes-dark-gray hover:text-barnes-dark-violet"
-                >
-                  Annuleren
-                </button>
-              )}
-              <button
-                type="submit"
-                disabled={isSavingAccount}
-                className="px-4 py-2 text-sm font-semibold text-white bg-barnes-violet rounded-lg hover:bg-barnes-dark-violet disabled:opacity-50"
-              >
-                {isSavingAccount ? 'Bezig...' : 'Activeer omgeving'}
-              </button>
-            </div>
-          </form>
-        </div>
-      )}
+      {/* Removed account modal - user just sees active users in sandbox */}
     </>
   );
 }

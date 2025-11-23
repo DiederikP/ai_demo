@@ -89,13 +89,19 @@ export default function CompanyKandidaten() {
     formData?: FormData;
   }>({ open: false });
 
+  const { selectedCompany } = useCompany();
+
   // Load data
   useEffect(() => {
     loadCandidates();
     loadJobs();
-  }, []);
-
-  const { selectedCompany } = useCompany();
+    // Auto-refresh every 30 seconds
+    const interval = setInterval(() => {
+      loadCandidates();
+      loadJobs();
+    }, 30000);
+    return () => clearInterval(interval);
+  }, [selectedCompany]);
   
   const loadJobs = async () => {
     try {
@@ -112,11 +118,17 @@ export default function CompanyKandidaten() {
 
   const loadCandidates = async () => {
     try {
+      const { getAuthHeaders } = await import('../lib/auth');
+      const headers = getAuthHeaders();
       const companyParam = selectedCompany?.id ? `?company_id=${selectedCompany.id}` : '';
-      const response = await fetch(`/api/candidates${companyParam}`);
+      const response = await fetch(`/api/candidates${companyParam}`, { headers });
       if (response.ok) {
         const data = await response.json();
+        console.log('[CompanyKandidaten] Loaded candidates:', data.candidates?.length || 0);
         setCandidates(data.candidates || []);
+      } else {
+        const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+        console.error('[CompanyKandidaten] Failed to load candidates:', response.status, errorData);
       }
     } catch (error) {
       console.error('Error loading candidates:', error);

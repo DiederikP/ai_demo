@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 
 interface Notification {
@@ -163,6 +163,32 @@ export default function NotificationCenter({ userId, isOpen, onClose }: Notifica
 
   const unreadCount = notifications.filter(n => !n.is_read).length;
 
+  // Group notifications by vacancy (job_id)
+  const notificationsByVacancy = useMemo(() => {
+    const grouped: Record<string, Notification[]> = {};
+    const ungrouped: Notification[] = [];
+    
+    notifications.forEach(notification => {
+      if (notification.related_job_id) {
+        if (!grouped[notification.related_job_id]) {
+          grouped[notification.related_job_id] = [];
+        }
+        grouped[notification.related_job_id].push(notification);
+      } else {
+        ungrouped.push(notification);
+      }
+    });
+    
+    // Sort each group by created_at (most recent first)
+    Object.keys(grouped).forEach(jobId => {
+      grouped[jobId].sort((a, b) => 
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      );
+    });
+    
+    return { grouped, ungrouped };
+  }, [notifications]);
+
   if (!isOpen) return null;
 
   return (
@@ -240,7 +266,67 @@ export default function NotificationCenter({ userId, isOpen, onClose }: Notifica
               </div>
             ) : (
               <div className="divide-y divide-gray-100">
-                {notifications.map(notification => (
+                {/* Grouped by Vacancy */}
+                {Object.entries(notificationsByVacancy.grouped).map(([jobId, jobNotifications]) => {
+                  const unreadCountForJob = jobNotifications.filter(n => !n.is_read).length;
+                  return (
+                    <div key={jobId} className="border-b border-gray-200 last:border-b-0">
+                      <div className="p-3 bg-gray-50 border-b border-gray-200">
+                        <div className="flex items-center justify-between">
+                          <p className="text-xs font-semibold text-barnes-dark-violet uppercase">
+                            Vacature Updates
+                          </p>
+                          {unreadCountForJob > 0 && (
+                            <span className="px-2 py-0.5 bg-barnes-violet text-white text-xs rounded-full">
+                              {unreadCountForJob} nieuw
+                            </span>
+                          )}
+                        </div>
+                        <button
+                          onClick={() => {
+                            router.push(`/company/vacatures/${jobId}`);
+                            onClose();
+                          }}
+                          className="text-xs text-barnes-violet hover:underline mt-1"
+                        >
+                          Bekijk vacature →
+                        </button>
+                      </div>
+                      {jobNotifications.map(notification => (
+                        <button
+                          key={notification.id}
+                          onClick={() => handleNotificationClick(notification)}
+                          className={`w-full text-left p-4 hover:bg-gray-50 transition-colors ${
+                            !notification.is_read ? 'bg-barnes-violet/5' : ''
+                          }`}
+                        >
+                          <div className="flex items-start gap-3">
+                            <span className="text-2xl">{getTypeIcon(notification.type)}</span>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 mb-1">
+                                <p className="font-medium text-barnes-dark-violet">{notification.title}</p>
+                                {!notification.is_read && (
+                                  <span className="w-2 h-2 bg-barnes-violet rounded-full"></span>
+                                )}
+                              </div>
+                              {notification.message && (
+                                <p className="text-sm text-barnes-dark-gray line-clamp-2">
+                                  {notification.message}
+                                </p>
+                              )}
+                              <p className="text-xs text-gray-400 mt-1">
+                                {new Date(notification.created_at).toLocaleString('nl-NL')}
+                              </p>
+                            </div>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  );
+                })}
+                
+                {/* Ungrouped Notifications */}
+                {notificationsByVacancy.ungrouped.map(notification => (
                   <button
                     key={notification.id}
                     onClick={() => handleNotificationClick(notification)}

@@ -4,13 +4,11 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '../contexts/AuthContext';
 
-interface RecruiterNavigationProps {
-  activeModule: 'dashboard' | 'vacatures' | 'kandidaten';
-  onModuleChange: (module: 'dashboard' | 'vacatures' | 'kandidaten') => void;
+interface CandidateNavigationProps {
   onCollapsedChange?: (isCollapsed: boolean) => void;
 }
 
-export default function RecruiterNavigation({ activeModule, onModuleChange, onCollapsedChange }: RecruiterNavigationProps) {
+export default function CandidateNavigation({ onCollapsedChange }: CandidateNavigationProps) {
   const [isCollapsed, setIsCollapsed] = useState(false);
   const { user, logout: logoutAuth } = useAuth();
   const router = useRouter();
@@ -25,14 +23,8 @@ export default function RecruiterNavigation({ activeModule, onModuleChange, onCo
 
   const handleLogout = () => {
     logoutAuth();
-    router.push('/company/login');
+    router.push('/candidate/login');
   };
-
-  const navItems = [
-    { id: 'dashboard', label: 'Dashboard', icon: '📊' },
-    { id: 'vacatures', label: 'Mijn Vacatures', icon: '💼' },
-    { id: 'kandidaten', label: 'Mijn Kandidaten', icon: '👥' },
-  ];
 
   return (
     <>
@@ -42,7 +34,11 @@ export default function RecruiterNavigation({ activeModule, onModuleChange, onCo
         className="md:hidden fixed top-4 left-4 z-50 p-2 bg-white rounded-lg shadow-lg border border-gray-200"
       >
         <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+          {isMobileMenuOpen ? (
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+          ) : (
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+          )}
         </svg>
       </button>
 
@@ -56,7 +52,7 @@ export default function RecruiterNavigation({ activeModule, onModuleChange, onCo
         <div className="p-4 border-b border-gray-200 bg-gray-50">
           {!isCollapsed && (
             <div className="flex items-center justify-between">
-              <h2 className="text-lg font-bold text-barnes-dark-violet">Recruiter Portal</h2>
+              <h2 className="text-lg font-bold text-barnes-dark-violet">Kandidaat Portal</h2>
               <button
                 onClick={() => setIsCollapsed(true)}
                 className="p-1 rounded hover:bg-gray-200"
@@ -83,24 +79,16 @@ export default function RecruiterNavigation({ activeModule, onModuleChange, onCo
 
         {/* Navigation Items */}
         <div className="flex-1 overflow-y-auto py-4">
-          {navItems.map((item) => (
-            <button
-              key={item.id}
-              onClick={() => {
-                onModuleChange(item.id as 'dashboard' | 'vacatures' | 'kandidaten');
-                setIsMobileMenuOpen(false);
-              }}
-              className={`w-full flex items-center gap-3 px-4 py-3 transition-colors ${
-                activeModule === item.id
-                  ? 'bg-barnes-violet/10 text-barnes-violet border-r-2 border-barnes-violet'
-                  : 'text-barnes-dark-gray hover:bg-gray-50'
-              }`}
-            >
-              <span className="text-xl">{item.icon}</span>
-              {!isCollapsed && <span className="font-medium">{item.label}</span>}
-            </button>
-          ))}
-          
+          <button
+            onClick={() => {
+              router.push('/candidate/dashboard');
+              setIsMobileMenuOpen(false);
+            }}
+            className="w-full flex items-center gap-3 px-4 py-3 transition-colors bg-barnes-violet/10 text-barnes-violet border-r-2 border-barnes-violet"
+          >
+            <span className="text-xl">📊</span>
+            {!isCollapsed && <span className="font-medium">Mijn Sollicitaties</span>}
+          </button>
         </div>
 
         {/* User Section */}

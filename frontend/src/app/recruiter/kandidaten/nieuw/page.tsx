@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import ProtectedRoute from '../../../../components/ProtectedRoute';
 import { getAuthHeaders } from '../../../../lib/auth';
 import Link from 'next/link';
+import DuplicateCandidateModal from '../../../../components/DuplicateCandidateModal';
 
 interface Vacancy {
   id: string;
@@ -20,10 +21,15 @@ export default function RecruiterNewCandidate() {
   const [motivationFile, setMotivationFile] = useState<File | null>(null);
   const [companyNote, setCompanyNote] = useState('');
   const [companyNoteFile, setCompanyNoteFile] = useState<File | null>(null);
-  const [candidateName, setCandidateName] = useState('');
-  const [candidateEmail, setCandidateEmail] = useState('');
   const [isUploading, setIsUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [duplicateInfo, setDuplicateInfo] = useState<{
+    existing_candidate_id: string;
+    existing_candidate_name: string;
+    existing_candidate_email: string;
+    existing_source_name?: string;
+  } | null>(null);
+  const [formDataToSubmit, setFormDataToSubmit] = useState<FormData | null>(null);
 
   // Extended candidate fields
   const [candidateForm, setCandidateForm] = useState({
@@ -81,6 +87,112 @@ export default function RecruiterNewCandidate() {
     }
   };
 
+  const submitFormData = async (formData: FormData, forceDuplicate: boolean = false, duplicateCandidateId?: string) => {
+    setIsUploading(true);
+    setError(null);
+
+    try {
+      if (forceDuplicate) {
+        formData.append('force_duplicate', 'true');
+      }
+      if (duplicateCandidateId) {
+        formData.append('duplicate_candidate_id', duplicateCandidateId);
+      }
+
+      const { getAuthHeadersForFormData } = await import('../../../../lib/auth');
+      const headers = getAuthHeadersForFormData();
+      
+      console.log('[RecruiterNewCandidate] Uploading candidate with formData keys:', Array.from(formData.keys()));
+      
+      const response = await fetch('/api/upload-resume', {
+        method: 'POST',
+        headers,
+        body: formData,
+      });
+
+      console.log('[RecruiterNewCandidate] Response status:', response.status, response.statusText);
+
+      // Get response text first
+      const responseText = await response.text();
+      console.log('[RecruiterNewCandidate] Response text:', responseText.substring(0, 500));
+
+      let data: any = {};
+      try {
+        data = JSON.parse(responseText);
+      } catch (e) {
+        console.error('[RecruiterNewCandidate] Failed to parse JSON:', e);
+        // If not JSON, treat as error
+        setError(responseText || `Server error: ${response.status} ${response.statusText}`);
+        setIsUploading(false);
+        return;
+      }
+
+      if (!response.ok) {
+        console.error('[RecruiterNewCandidate] Upload error:', {
+          status: response.status,
+          statusText: response.statusText,
+          data
+        });
+        
+        if (data.duplicate_detected) {
+          // Show duplicate modal with options
+          setDuplicateInfo({
+            existing_candidate_id: data.existing_candidate_id,
+            existing_candidate_name: data.existing_candidate_name || 'Onbekend',
+            existing_candidate_email: data.existing_candidate_email || '',
+            existing_source_name: data.existing_source_name,
+          });
+          setFormDataToSubmit(formData);
+          setIsUploading(false);
+          return;
+        } else {
+          const errorMessage = data.error || data.detail || data.message || `Fout bij uploaden kandidaat (${response.status})`;
+          setError(errorMessage);
+        }
+        setIsUploading(false);
+        return;
+      }
+      
+      // Check if response indicates failure even with 200 status
+      if (data.success === false) {
+        const errorMessage = data.error || data.detail || data.message || 'Fout bij uploaden kandidaat';
+        console.error('[RecruiterNewCandidate] Upload failed:', errorMessage);
+        setError(errorMessage);
+        setIsUploading(false);
+        return;
+      }
+      
+      // Success - redirect to candidate detail or list
+      if (data.candidate_id) {
+        router.push(`/recruiter/kandidaten/${data.candidate_id}`);
+      } else {
+        setError('Kandidaat is geüpload maar geen ID ontvangen. Probeer de pagina te vernieuwen.');
+        setIsUploading(false);
+      }
+    } catch (error: any) {
+      console.error('[RecruiterNewCandidate] Exception uploading candidate:', error);
+      console.error('[RecruiterNewCandidate] Error stack:', error.stack);
+      setError(error.message || error.toString() || 'Fout bij uploaden kandidaat');
+      setIsUploading(false);
+    }
+  };
+
+  const handleDuplicateOverwrite = async () => {
+    if (!formDataToSubmit || !duplicateInfo) return;
+    await submitFormData(formDataToSubmit, false, duplicateInfo.existing_candidate_id);
+  };
+
+  const handleDuplicateInterrupt = () => {
+    setDuplicateInfo(null);
+    setFormDataToSubmit(null);
+    setError('Kandidaat upload onderbroken. Je kunt de bestaande kandidaat bekijken of later opnieuw proberen.');
+  };
+
+  const handleDuplicateForceAdd = async () => {
+    if (!formDataToSubmit) return;
+    await submitFormData(formDataToSubmit, true);
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
@@ -89,82 +201,45 @@ export default function RecruiterNewCandidate() {
       return;
     }
 
-    if (!selectedVacancy) {
-      setError('Selecteer een vacature');
-      return;
-    }
-
-    setIsUploading(true);
-    setError(null);
-
-    try {
-      const formData = new FormData();
-      formData.append('file', selectedFile);
+    // Vacancy is now optional - can be assigned later
+    const formData = new FormData();
+    formData.append('file', selectedFile);
+    // Only add job_id if a vacancy is selected
+    if (selectedVacancy) {
       formData.append('job_id', selectedVacancy);
-      
-      if (candidateName) formData.append('name', candidateName);
-      if (candidateEmail) formData.append('email', candidateEmail);
-      if (motivationFile) formData.append('motivation_file', motivationFile);
-      
-      // Company note (recruiter's note about the candidate)
-      if (companyNoteFile) {
-        formData.append('company_note_file', companyNoteFile);
-      } else if (companyNote) {
-        formData.append('company_note', companyNote);
-      }
-
-      // Extended fields
-      if (candidateForm.motivation_reason) formData.append('motivation_reason', candidateForm.motivation_reason);
-      if (candidateForm.test_results) formData.append('test_results', candidateForm.test_results);
-      if (candidateForm.age) formData.append('age', candidateForm.age);
-      if (candidateForm.years_experience) formData.append('years_experience', candidateForm.years_experience);
-      if (candidateForm.skill_tags) formData.append('skill_tags', JSON.stringify(candidateForm.skill_tags.split(',').map(t => t.trim()).filter(t => t)));
-      if (candidateForm.prior_job_titles) formData.append('prior_job_titles', JSON.stringify(candidateForm.prior_job_titles.split(',').map(t => t.trim()).filter(t => t)));
-      if (candidateForm.certifications) formData.append('certifications', JSON.stringify(candidateForm.certifications.split(',').map(t => t.trim()).filter(t => t)));
-      if (candidateForm.education_level) formData.append('education_level', candidateForm.education_level);
-      if (candidateForm.location) formData.append('location', candidateForm.location);
-      if (candidateForm.communication_level) formData.append('communication_level', candidateForm.communication_level);
-      if (candidateForm.availability_per_week) formData.append('availability_per_week', candidateForm.availability_per_week);
-      if (candidateForm.notice_period) formData.append('notice_period', candidateForm.notice_period);
-      if (candidateForm.salary_expectation) formData.append('salary_expectation', candidateForm.salary_expectation);
-      if (candidateForm.source) formData.append('source', candidateForm.source);
-
-      // Pipeline defaults for new submissions
-      formData.append('pipeline_stage', 'introduced');
-      formData.append('pipeline_status', 'active');
-
-      const headers = getAuthHeaders();
-      // Note: upload-resume endpoint will extract submitted_by_company_id from the auth token
-      const response = await fetch('/api/upload-resume', {
-        method: 'POST',
-        headers: {
-          ...headers,
-          // Don't set Content-Type - browser will set it with boundary for FormData
-        },
-        body: formData,
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
-        if (errorData.duplicate_detected) {
-          // Handle duplicate - for now just show error
-          setError(`Kandidaat bestaat al: ${errorData.existing_candidate_name || 'Onbekend'}. Neem contact op met beheerder of update de bestaande kandidaat.`);
-        } else {
-          setError(errorData.error || errorData.detail || 'Fout bij uploaden kandidaat');
-        }
-        setIsUploading(false);
-        return;
-      }
-
-      const data = await response.json();
-      
-      // Success - redirect to candidate detail or list
-      router.push(`/recruiter/kandidaten/${data.candidate_id}`);
-    } catch (error: any) {
-      console.error('Error uploading candidate:', error);
-      setError(error.message || 'Fout bij uploaden kandidaat');
-      setIsUploading(false);
     }
+    
+    // Name and email are extracted automatically from CV - don't send them
+    if (motivationFile) formData.append('motivation_file', motivationFile);
+    
+    // Company note (recruiter's note about the candidate)
+    if (companyNoteFile) {
+      formData.append('company_note_file', companyNoteFile);
+    } else if (companyNote) {
+      formData.append('company_note', companyNote);
+    }
+
+    // Extended fields
+    if (candidateForm.motivation_reason) formData.append('motivation_reason', candidateForm.motivation_reason);
+    if (candidateForm.test_results) formData.append('test_results', candidateForm.test_results);
+    if (candidateForm.age) formData.append('age', candidateForm.age);
+    if (candidateForm.years_experience) formData.append('years_experience', candidateForm.years_experience);
+    if (candidateForm.skill_tags) formData.append('skill_tags', JSON.stringify(candidateForm.skill_tags.split(',').map(t => t.trim()).filter(t => t)));
+    if (candidateForm.prior_job_titles) formData.append('prior_job_titles', JSON.stringify(candidateForm.prior_job_titles.split(',').map(t => t.trim()).filter(t => t)));
+    if (candidateForm.certifications) formData.append('certifications', JSON.stringify(candidateForm.certifications.split(',').map(t => t.trim()).filter(t => t)));
+    if (candidateForm.education_level) formData.append('education_level', candidateForm.education_level);
+    if (candidateForm.location) formData.append('location', candidateForm.location);
+    if (candidateForm.communication_level) formData.append('communication_level', candidateForm.communication_level);
+    if (candidateForm.availability_per_week) formData.append('availability_per_week', candidateForm.availability_per_week);
+    if (candidateForm.notice_period) formData.append('notice_period', candidateForm.notice_period);
+    if (candidateForm.salary_expectation) formData.append('salary_expectation', candidateForm.salary_expectation);
+    if (candidateForm.source) formData.append('source', candidateForm.source);
+
+    // Pipeline defaults for new submissions
+    formData.append('pipeline_stage', 'introduced');
+    formData.append('pipeline_status', 'active');
+
+    await submitFormData(formData);
   };
 
   return (
@@ -193,18 +268,17 @@ export default function RecruiterNewCandidate() {
           )}
 
           <form onSubmit={handleSubmit} className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 space-y-6">
-            {/* Vacancy Selection */}
+            {/* Vacancy Selection - Optional (can be assigned later) */}
             <div>
               <label className="block text-sm font-medium text-barnes-dark-violet mb-2">
-                Vacature * <span className="text-red-500">*</span>
+                Vacature (optioneel - kan later worden toegewezen)
               </label>
               <select
                 value={selectedVacancy}
                 onChange={(e) => setSelectedVacancy(e.target.value)}
                 className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-barnes-violet"
-                required
               >
-                <option value="">Selecteer een vacature</option>
+                <option value="">Geen vacature (later toewijzen)</option>
                 {vacancies.map((vacancy) => (
                   <option key={vacancy.id} value={vacancy.id}>
                     {vacancy.title} - {vacancy.company}
@@ -230,33 +304,6 @@ export default function RecruiterNewCandidate() {
               )}
             </div>
 
-            {/* Optional: Name and Email (can be extracted from CV) */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-barnes-dark-violet mb-2">
-                  Naam (optioneel)
-                </label>
-                <input
-                  type="text"
-                  value={candidateName}
-                  onChange={(e) => setCandidateName(e.target.value)}
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-barnes-violet"
-                  placeholder="Wordt automatisch uit CV gehaald"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-barnes-dark-violet mb-2">
-                  Email (optioneel)
-                </label>
-                <input
-                  type="email"
-                  value={candidateEmail}
-                  onChange={(e) => setCandidateEmail(e.target.value)}
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-barnes-violet"
-                  placeholder="Wordt automatisch uit CV gehaald"
-                />
-              </div>
-            </div>
 
             {/* Motivation Letter */}
             <div>
@@ -304,12 +351,12 @@ export default function RecruiterNewCandidate() {
               </div>
             </div>
 
-            {/* Extended Fields - Collapsible */}
-            <details className="border border-gray-200 rounded-lg p-4">
-              <summary className="cursor-pointer text-sm font-medium text-barnes-dark-violet mb-4">
+            {/* Extended Fields - Partially Visible */}
+            <div className="border border-gray-200 rounded-lg p-4 space-y-4">
+              <h3 className="text-sm font-medium text-barnes-dark-violet mb-4">
                 Extra Informatie (optioneel)
-              </summary>
-              <div className="space-y-4 mt-4">
+              </h3>
+              <div className="space-y-4">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
                     <label className="block text-sm font-medium text-barnes-dark-violet mb-2">
@@ -381,8 +428,131 @@ export default function RecruiterNewCandidate() {
                     placeholder="Bijv: Python, React, Teamleiding"
                   />
                 </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-barnes-dark-violet mb-2">
+                      Beschikbaarheid per week (uren)
+                    </label>
+                    <input
+                      type="number"
+                      value={candidateForm.availability_per_week}
+                      onChange={(e) => setCandidateForm({...candidateForm, availability_per_week: e.target.value})}
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-barnes-violet"
+                      placeholder="Bijv: 32"
+                      min="0"
+                      max="40"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-barnes-dark-violet mb-2">
+                      Opzegtermijn
+                    </label>
+                    <input
+                      type="text"
+                      value={candidateForm.notice_period}
+                      onChange={(e) => setCandidateForm({...candidateForm, notice_period: e.target.value})}
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-barnes-violet"
+                      placeholder="Bijv: 1 maand"
+                    />
+                  </div>
+                </div>
+                
+                {/* Additional Fields - Collapsible */}
+                <details className="border-t border-gray-200 pt-4 mt-4">
+                  <summary className="cursor-pointer text-sm font-medium text-barnes-dark-gray mb-4">
+                    Meer velden (test results, certificaten, etc.)
+                  </summary>
+                  <div className="space-y-4 mt-4">
+                    <div>
+                      <label className="block text-sm font-medium text-barnes-dark-violet mb-2">
+                        Test Resultaten / Skill Scores
+                      </label>
+                      <input
+                        type="text"
+                        value={candidateForm.test_results}
+                        onChange={(e) => setCandidateForm({...candidateForm, test_results: e.target.value})}
+                        className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-barnes-violet"
+                        placeholder="Bijv: Technical test: 85%, Personality: Good fit"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-barnes-dark-violet mb-2">
+                        Vorige Functietitels (komma-gescheiden)
+                      </label>
+                      <input
+                        type="text"
+                        value={candidateForm.prior_job_titles}
+                        onChange={(e) => setCandidateForm({...candidateForm, prior_job_titles: e.target.value})}
+                        className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-barnes-violet"
+                        placeholder="Bijv: Software Developer, Team Lead, Senior Engineer"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-barnes-dark-violet mb-2">
+                        Certificaten (komma-gescheiden)
+                      </label>
+                      <input
+                        type="text"
+                        value={candidateForm.certifications}
+                        onChange={(e) => setCandidateForm({...candidateForm, certifications: e.target.value})}
+                        className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-barnes-violet"
+                        placeholder="Bijv: AWS Certified, Scrum Master, ITIL"
+                      />
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-sm font-medium text-barnes-dark-violet mb-2">
+                          Opleidingsniveau
+                        </label>
+                        <select
+                          value={candidateForm.education_level}
+                          onChange={(e) => setCandidateForm({...candidateForm, education_level: e.target.value})}
+                          className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-barnes-violet"
+                        >
+                          <option value="">Selecteer...</option>
+                          <option value="VMBO">VMBO</option>
+                          <option value="HAVO">HAVO</option>
+                          <option value="VWO">VWO</option>
+                          <option value="MBO">MBO</option>
+                          <option value="HBO">HBO</option>
+                          <option value="WO Bachelor">WO Bachelor</option>
+                          <option value="WO Master">WO Master</option>
+                          <option value="PhD">PhD</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-barnes-dark-violet mb-2">
+                          Communicatieniveau
+                        </label>
+                        <select
+                          value={candidateForm.communication_level}
+                          onChange={(e) => setCandidateForm({...candidateForm, communication_level: e.target.value})}
+                          className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-barnes-violet"
+                        >
+                          <option value="">Selecteer...</option>
+                          <option value="Basis">Basis</option>
+                          <option value="Goed">Goed</option>
+                          <option value="Zeer Goed">Zeer Goed</option>
+                          <option value="Uitstekend">Uitstekend</option>
+                        </select>
+                      </div>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-barnes-dark-violet mb-2">
+                        Bron / Sourcing
+                      </label>
+                      <input
+                        type="text"
+                        value={candidateForm.source}
+                        onChange={(e) => setCandidateForm({...candidateForm, source: e.target.value})}
+                        className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-barnes-violet"
+                        placeholder="Bijv: LinkedIn, Indeed, Referral, etc."
+                      />
+                    </div>
+                  </div>
+                </details>
               </div>
-            </details>
+            </div>
 
             {/* Submit Button */}
             <div className="flex gap-4 pt-4 border-t border-gray-200">
@@ -401,6 +571,26 @@ export default function RecruiterNewCandidate() {
               </Link>
             </div>
           </form>
+
+          {/* Duplicate Candidate Modal */}
+          {duplicateInfo && (
+            <DuplicateCandidateModal
+              isOpen={!!duplicateInfo}
+              onClose={() => {
+                setDuplicateInfo(null);
+                setFormDataToSubmit(null);
+              }}
+              existingCandidate={{
+                id: duplicateInfo.existing_candidate_id,
+                name: duplicateInfo.existing_candidate_name,
+                email: duplicateInfo.existing_candidate_email,
+                source_name: duplicateInfo.existing_source_name,
+              }}
+              onOverwrite={handleDuplicateOverwrite}
+              onInterrupt={handleDuplicateInterrupt}
+              onForceAdd={handleDuplicateForceAdd}
+            />
+          )}
         </div>
       </div>
     </ProtectedRoute>

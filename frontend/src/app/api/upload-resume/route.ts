@@ -9,6 +9,8 @@ export async function POST(request: NextRequest) {
     // Get authorization header and forward it to backend
     const authHeader = request.headers.get('authorization') || request.headers.get('Authorization');
     
+    // Don't set Content-Type header - browser will set it automatically with boundary for FormData
+    // Setting it manually can cause issues with multipart/form-data
     const headers: HeadersInit = {};
     if (authHeader) {
       headers['Authorization'] = authHeader;
@@ -20,7 +22,7 @@ export async function POST(request: NextRequest) {
     const backendResponse = await fetch(`${BACKEND_URL}/upload-resume`, {
       method: 'POST',
       headers,
-      body: formData,
+      body: formData, // FormData will set Content-Type automatically with boundary
     });
 
     if (!backendResponse.ok) {
@@ -30,10 +32,20 @@ export async function POST(request: NextRequest) {
       try {
         errorData = JSON.parse(errorText);
       } catch {
-        // Not JSON, use text as error
+        // Not JSON, use text as error message
+        errorData = { 
+          error: errorText || `Server error: ${backendResponse.status} ${backendResponse.statusText}`,
+          detail: errorText 
+        };
       }
       
-      console.error('Backend upload resume error:', errorData);
+      console.error('[upload-resume API] Backend error:', {
+        status: backendResponse.status,
+        statusText: backendResponse.statusText,
+        errorData,
+        errorText: errorText.substring(0, 500)
+      });
+      
       return NextResponse.json(
         errorData,
         { status: backendResponse.status }

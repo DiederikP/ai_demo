@@ -19,8 +19,21 @@ export async function POST(request: NextRequest) {
     // Build form data for backend
     const backendFormData = new FormData();
     backendFormData.append('candidate_id', candidateId);
+    
+    // Forward job_id if present
+    const jobId = formData.get('job_id') as string;
+    if (jobId) {
+      backendFormData.append('job_id', jobId);
+    }
+    
     if (companyNote) {
       backendFormData.append('company_note', companyNote);
+    }
+    
+    // Forward company_note_file if present
+    const companyNoteFile = formData.get('company_note_file') as File;
+    if (companyNoteFile && companyNoteFile instanceof File) {
+      backendFormData.append('company_note_file', companyNoteFile);
     }
 
     // Add persona prompts dynamically - backend expects {persona_name}_prompt format

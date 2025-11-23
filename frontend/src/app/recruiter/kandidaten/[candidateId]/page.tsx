@@ -38,18 +38,51 @@ export default function RecruiterCandidateDetail() {
 
   const loadCandidate = async () => {
     try {
+      console.log(`[RecruiterCandidateDetail] Loading candidate ${candidateId}`);
       const headers = getAuthHeaders();
       const response = await fetch(`/api/candidates/${candidateId}`, { headers });
+      
+      console.log(`[RecruiterCandidateDetail] Response status: ${response.status}`);
+      
       if (response.ok) {
         const data = await response.json();
-        setCandidate(data.candidate);
-        setCompanyNote(data.candidate.company_note || '');
+        console.log(`[RecruiterCandidateDetail] Candidate data:`, data);
+        
+        if (data.candidate) {
+          setCandidate(data.candidate);
+          setCompanyNote(data.candidate.company_note || '');
+        } else if (data.success && data.candidate) {
+          // Handle alternative response format
+          setCandidate(data.candidate);
+          setCompanyNote(data.candidate.company_note || '');
+        } else {
+          throw new Error('Invalid response format: candidate data not found');
+        }
       } else {
-        const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
-        alert(`Fout bij laden kandidaat: ${errorData.error || 'Onbekende fout'}`);
+        // Get error message from response
+        const errorText = await response.text();
+        let errorData: any = { error: errorText || 'Unknown error' };
+        
+        try {
+          errorData = JSON.parse(errorText);
+        } catch {
+          // Not JSON, use text as error
+          errorData = { error: errorText || `Server error: ${response.status} ${response.statusText}` };
+        }
+        
+        console.error('[RecruiterCandidateDetail] Error loading candidate:', {
+          status: response.status,
+          statusText: response.statusText,
+          errorData,
+          errorText
+        });
+        
+        const errorMessage = errorData.error || errorData.detail || errorData.message || `Fout bij laden kandidaat (${response.status})`;
+        alert(`Fout bij laden kandidaat: ${errorMessage}`);
       }
     } catch (error: any) {
-      console.error('Error loading candidate:', error);
+      console.error('[RecruiterCandidateDetail] Exception loading candidate:', error);
+      console.error('[RecruiterCandidateDetail] Error stack:', error.stack);
       alert(`Fout bij laden kandidaat: ${error.message || 'Onbekende fout'}`);
     } finally {
       setIsLoading(false);

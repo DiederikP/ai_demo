@@ -111,12 +111,16 @@ export default function Home() {
 
   const loadJobDescriptions = async () => {
     try {
-      const response = await fetch('/api/upload-job');
+      // Use the correct endpoint for getting job descriptions
+      const response = await fetch('/api/job-descriptions');
       if (response.ok) {
         const result = await response.json();
         setJobDescriptions(result.jobs || []);
       } else {
-        console.error('Failed to load job descriptions:', response.status, response.statusText);
+        // Don't show error for 403 - user might not be authenticated (public page)
+        if (response.status !== 403) {
+          console.error('Failed to load job descriptions:', response.status, response.statusText);
+        }
       }
     } catch (error: any) {
       console.error('Error loading job descriptions:', error);

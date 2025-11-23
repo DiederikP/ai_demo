@@ -225,9 +225,9 @@ Houd het kort (1-2 zinnen) en zakelijk. Geen herhaling van evaluatie-resultaten 
     formatted += "\n- Voeg nieuwe perspectieven toe of verdiep punten die anderen hebben gemaakt"
     
     if company_note_mentioned:
-    formatted += "\n- **KRITIEK**: Bedrijfsnotitie-informatie (salaris, beschikbaarheid) is AL besproken."
-    formatted += "\n- **VERBODEN**: Noem deze details NIET MEER."
-    formatted += "\n- **VERPLICHT**: Focus op andere aspecten: vaardigheden, ervaring, risico's, conclusies."
+        formatted += "\n- **KRITIEK**: Bedrijfsnotitie-informatie (salaris, beschikbaarheid) is AL besproken."
+        formatted += "\n- **VERBODEN**: Noem deze details NIET MEER."
+        formatted += "\n- **VERPLICHT**: Focus op andere aspecten: vaardigheden, ervaring, risico's, conclusies."
     else:
         formatted += "\n- Bedrijfsnotitie-informatie mag EEN KEER genoemd worden als relevant"
     
@@ -298,9 +298,19 @@ async def invoke_persona(
     # Format conversation context for this persona
     conversation_context = format_conversation_context(conversation, persona_name, company_note)
     
-    # Invoke LLM
-    chain = prompt_template | llm
-    result = await chain.ainvoke({"conversation_context": conversation_context})
+    # Invoke LLM with error handling
+    try:
+        chain = prompt_template | llm
+        result = await chain.ainvoke({"conversation_context": conversation_context})
+    except Exception as e:
+        print(f"Error invoking persona {persona_name}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        # Return a fallback message
+        return {
+            'speaker': persona_name,
+            'message': f"Er is een fout opgetreden bij het genereren van een reactie voor {persona_name.replace('_', ' ').title()}. Probeer het opnieuw."
+        }
     
     # Extract content
     message_content = result.content if hasattr(result, 'content') else str(result)
@@ -385,9 +395,19 @@ async def invoke_orchestrator(
     # Get conversation status
     conversation_status = get_conversation_status(conversation, persona_names)
     
-    # Invoke LLM
-    chain = prompt_template | llm
-    result = await chain.ainvoke({"conversation_status": conversation_status})
+    # Invoke LLM with error handling
+    try:
+        chain = prompt_template | llm
+        result = await chain.ainvoke({"conversation_status": conversation_status})
+    except Exception as e:
+        print(f"Error invoking orchestrator: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        # Return a fallback message
+        return {
+            'speaker': 'Moderator',
+            'message': "Er is een fout opgetreden bij het begeleiden van het debat. Probeer het opnieuw."
+        }
     
     # Extract content
     message_content = result.content if hasattr(result, 'content') else str(result)
@@ -416,9 +436,19 @@ async def invoke_orchestrator_summary(
     # Get conversation status for context
     conversation_status = get_conversation_status(conversation, persona_names)
     
-    # Invoke LLM
-    chain = prompt_template | llm
-    result = await chain.ainvoke({"conversation_status": conversation_status})
+    # Invoke LLM with error handling
+    try:
+        chain = prompt_template | llm
+        result = await chain.ainvoke({"conversation_status": conversation_status})
+    except Exception as e:
+        print(f"Error invoking orchestrator summary: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        # Return a fallback message
+        return {
+            'speaker': 'Moderator',
+            'message': "Er is een fout opgetreden bij het genereren van de samenvatting. Probeer het opnieuw."
+        }
     
     # Extract content
     message_content = result.content if hasattr(result, 'content') else str(result)

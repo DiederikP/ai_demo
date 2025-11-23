@@ -614,6 +614,22 @@ class ApprovalDB(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     __table_args__ = (UniqueConstraint('user_id', 'candidate_id', 'job_id', 'approval_type', name='unique_user_approval'),)
 
+class ScheduledAppointmentDB(Base):
+    __tablename__ = "scheduled_appointments"
+    id = Column(String, primary_key=True, default=lambda: str(uuid4()))
+    candidate_id = Column(String, ForeignKey("candidates.id"), nullable=False)
+    job_id = Column(String, ForeignKey("job_postings.id"), nullable=False)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False)  # User who scheduled it
+    conversation_id = Column(String, ForeignKey("candidate_conversations.id"), nullable=True)  # Related conversation if any
+    scheduled_at = Column(DateTime(timezone=True), nullable=False)  # Date and time of appointment
+    type = Column(String, nullable=False)  # 'Eerste Interview', 'Tweede Interview', 'Technische Test', etc.
+    location = Column(String, nullable=True)  # 'Teams/Zoom', 'Kantoor', etc.
+    notes = Column(Text, nullable=True)
+    status = Column(String, default='scheduled')  # 'scheduled', 'completed', 'cancelled', 'rescheduled'
+    calendar_event_id = Column(String, nullable=True)  # For future calendar integration
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
 Base.metadata.create_all(bind=engine)
 
 def slugify(value: Optional[str]) -> str:
@@ -783,6 +799,7 @@ def seed_sample_company_users():
 ensure_column_exists("users", "company_id", "TEXT")
 ensure_column_exists("users", "password_hash", "TEXT")
 ensure_column_exists("evaluations", "job_id", "TEXT")
+# Ensure scheduled_appointments table exists (created by Base.metadata.create_all, but ensure columns exist)
 default_company_id = ensure_default_company()
 assign_users_without_company(default_company_id)
 # seed_sample_company_users() will be called after get_password_hash is defined (see below)
@@ -1946,6 +1963,45 @@ async def upload_job_description(
             db.close()
             raise HTTPException(status_code=400, detail="Title, company, and description are required")
         
+        # Get current user to set company_id (for multi-portal isolation)
+        current_user = None
+        auth_header = request.headers.get("authorization") or request.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            try:
+                token = auth_header.replace("Bearer ", "")
+                payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+                user_id = payload.get("sub")
+                if user_id:
+                    current_user = db.query(UserDB).filter(UserDB.id == user_id, UserDB.is_active == True).first()
+                    if current_user:
+                        print(f"[DEBUG] Found user: {current_user.email}, company_id: {current_user.company_id}, role: {current_user.role}")
+                    else:
+                        print(f"[DEBUG] User not found for user_id: {user_id}")
+            except (JWTError, Exception) as e:
+                # Not authenticated - job will be created without company_id (backward compatibility)
+                print(f"[DEBUG] Auth error: {e}")
+                pass
+        else:
+            print(f"[DEBUG] No auth header found")
+        
+        # Get company_id from user or request data
+        job_company_id = None
+        if "application/json" in content_type:
+            job_company_id = data.get("company_id", None)
+        else:
+            company_id_form = form_data.get("company_id", None)
+            if company_id_form:
+                job_company_id = company_id_form[0] if isinstance(company_id_form, list) else company_id_form
+        
+        # If no company_id in request, use current user's company_id
+        # IMPORTANT: Always use current user's company_id if available (for multi-portal isolation)
+        if not job_company_id and current_user:
+            if current_user.company_id:
+                job_company_id = current_user.company_id
+                print(f"[DEBUG] Using current user's company_id: {job_company_id}")
+            else:
+                print(f"[DEBUG] No company_id set. User: {current_user.email}, role: {current_user.role}, user.company_id: {current_user.company_id}")
+        
         # Process weighted_requirements - convert to JSON string if needed
         import json
         weighted_requirements_str = None
@@ -1971,7 +2027,9 @@ async def upload_job_description(
             location=location or "Not specified",
             salary_range=salary_range or "Not specified",
             created_at=datetime.now(),  # Set created_at explicitly for SQLite compatibility
-            weighted_requirements=weighted_requirements_str
+            weighted_requirements=weighted_requirements_str,
+            company_id=job_company_id,  # Set company_id for multi-portal isolation
+            is_active=True  # New vacancies are active by default
         )
         
         db.add(job_posting)
@@ -2013,6 +2071,45 @@ async def upload_job_description(
             except Exception as notif_error:
                 print(f"Error creating job notifications: {str(notif_error)}")
         
+        # Notify all recruiter companies about the new vacancy
+        # Find all companies with recruiter role users
+        try:
+            recruiter_companies = db.query(CompanyDB).join(UserDB).filter(
+                UserDB.role == "recruiter",
+                UserDB.is_active == True
+            ).distinct().all()
+            
+            for recruiter_company in recruiter_companies:
+                # Get all active recruiter users in this company
+                recruiter_users = db.query(UserDB).filter(
+                    UserDB.company_id == recruiter_company.id,
+                    UserDB.role == "recruiter",
+                    UserDB.is_active == True
+                ).all()
+                
+                for recruiter_user in recruiter_users:
+                    notification = NotificationDB(
+                        user_id=recruiter_user.id,
+                        type="new_vacancy_available",
+                        title=f"Nieuwe vacature beschikbaar: {title}",
+                        message=f"Bedrijf {company} heeft een nieuwe vacature '{title}' geplaatst",
+                        related_job_id=job_id
+                    )
+                    db.add(notification)
+            
+            db.commit()
+        except Exception as recruiter_notif_error:
+            print(f"Error creating recruiter notifications: {str(recruiter_notif_error)}")
+        
+        # Verify the job was created with correct company_id BEFORE closing DB
+        created_job = db.query(JobPostingDB).filter(JobPostingDB.id == job_id).first()
+        actual_company_id = created_job.company_id if created_job else None
+        actual_is_active = created_job.is_active if created_job and hasattr(created_job, 'is_active') else True
+        
+        print(f"[DEBUG] Created job posting: id={job_id}, title={title}, company={company}")
+        print(f"[DEBUG]   Expected company_id: {job_company_id}, Actual company_id: {actual_company_id}")
+        print(f"[DEBUG]   Expected is_active: True, Actual is_active: {actual_is_active}")
+        
         db.close()
         
         return {
@@ -2020,8 +2117,11 @@ async def upload_job_description(
             "job": {
                 "id": job_id,
                 "title": title,
-                "company": company
+                "company": company,
+                "company_id": actual_company_id,  # Return actual value from DB
+                "is_active": actual_is_active  # Return actual value from DB
             },
+            "id": job_id,  # Also return id at top level for compatibility
             "message": "Job description uploaded successfully"
         }
         
@@ -2032,30 +2132,41 @@ async def upload_job_description(
 
 @app.get("/job-descriptions")
 async def get_job_descriptions(
+    request: Request,
     company_id: Optional[str] = None,
-    recruiter_id: Optional[str] = None,
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
+    recruiter_id: Optional[str] = None
 ):
-    """Get all job descriptions, optionally filtered by company_id or recruiter_id"""
+    """Get all job descriptions, optionally filtered by company_id or recruiter_id
+    
+    Allows unauthenticated requests for public pages, but filters by company/recruiter if authenticated.
+    """
     try:
         import json
+        from fastapi import Request
         db = SessionLocal()
         query = db.query(JobPostingDB)
         
         # Try to get current user (optional - allow unauthenticated requests)
         current_user = None
-        if credentials:
+        auth_header = request.headers.get("authorization") or request.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
             try:
-                current_user = await get_current_user(credentials)
-            except:
-                pass  # Not authenticated, continue without user filtering
+                token = auth_header.replace("Bearer ", "")
+                payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+                user_id = payload.get("sub")
+                if user_id:
+                    current_user = db.query(UserDB).filter(UserDB.id == user_id, UserDB.is_active == True).first()
+            except (JWTError, Exception):
+                # Not authenticated - allow request but don't filter by user
+                pass
         
         # Filter by recruiter_id if provided (recruiter portal)
         if recruiter_id:
             query = query.filter(JobPostingDB.assigned_agency_id == recruiter_id)
         elif current_user and current_user.role == "recruiter":
-            # If user is a recruiter, only show assigned vacancies
-            query = query.filter(JobPostingDB.assigned_agency_id == current_user.id)
+            # Recruiters see all vacancies (not just assigned) - they can see company vacancies
+            # The recruiter portal endpoint handles filtering for assigned vs new
+            pass  # Don't filter here - show all vacancies
         
         # Filter by company_id if provided (multi-portal isolation)
         # Include jobs with NULL company_id for backward compatibility with old data
@@ -2077,6 +2188,14 @@ async def get_job_descriptions(
             )
         
         jobs = query.all()
+        
+        # Debug logging
+        print(f"[DEBUG get_job_descriptions] Found {len(jobs)} jobs")
+        print(f"[DEBUG get_job_descriptions] company_id param: {company_id}")
+        print(f"[DEBUG get_job_descriptions] current_user: {current_user.email if current_user else 'None'}, company_id: {current_user.company_id if current_user else 'None'}")
+        for job in jobs[:3]:  # Log first 3 jobs
+            print(f"[DEBUG] Job: {job.title}, company_id: {job.company_id}, is_active: {getattr(job, 'is_active', 'N/A')}")
+        
         db.close()
         
         return {
@@ -2095,7 +2214,8 @@ async def get_job_descriptions(
                     "timeline_stage": job.timeline_stage,
                     "is_active": job.is_active if hasattr(job, 'is_active') else True,  # Default to active if not set
                     "weighted_requirements": job.weighted_requirements if hasattr(job, 'weighted_requirements') else None,
-                    "assigned_agency_id": job.assigned_agency_id if hasattr(job, 'assigned_agency_id') else None
+                    "assigned_agency_id": job.assigned_agency_id if hasattr(job, 'assigned_agency_id') else None,
+                    "company_id": job.company_id if hasattr(job, 'company_id') else None  # Include company_id in response
                 }
                 for job in jobs
             ]
@@ -2479,6 +2599,78 @@ async def upload_resume(
         # Safely truncate text
         resume_text = truncate_text_safely(resume_text, MAX_RESUME_CHARS)
         
+        # Normalize name and email (handle empty strings, None, etc.)
+        name = name.strip() if name and isinstance(name, str) and name.strip() else None
+        email = email.strip() if email and isinstance(email, str) and email.strip() else None
+        
+        print(f"[DEBUG] Initial name: {name}, email: {email}")
+        
+        # Extract name and email from resume text if not provided
+        # IMPORTANT: This happens BEFORE any validation to ensure name is always set
+        if not name or not email:
+            try:
+                import re
+                # Extract email using regex pattern
+                if not email:
+                    email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+                    email_match = re.search(email_pattern, resume_text)
+                    if email_match:
+                        email = email_match.group(0)
+                        print(f"[DEBUG] Extracted email from CV: {email}")
+                
+                # Extract name from first few lines (usually at top of CV)
+                if not name:
+                    print(f"[DEBUG] Attempting to extract name from CV...")
+                    first_lines = resume_text.split('\n')[:15]  # Check more lines
+                    for i, line in enumerate(first_lines):
+                        line = line.strip()
+                        # Skip empty lines and lines that look like headers or contact info
+                        if not line:
+                            continue
+                        skip_keywords = ['email', 'phone', 'tel', 'address', 'linkedin', 'www', 'http', 'cv', 'resume', 'curriculum', 'vitae', 'mobile', 'telefoon']
+                        if any(skip in line.lower() for skip in skip_keywords):
+                            continue
+                        # Check if line looks like a name (2-4 words, mostly letters, possibly with dots or hyphens)
+                        words = line.split()
+                        if 2 <= len(words) <= 4:
+                            # Check if all words are mostly alphabetic (allow dots, hyphens, apostrophes)
+                            if all(re.match(r'^[A-Za-zÀ-ÿ\-\'\.]+$', word) for word in words):
+                                name = line
+                                print(f"[DEBUG] Extracted name from CV (line {i+1}): {name}")
+                                break
+                    
+                    # If still no name, try first non-empty line that's not a header
+                    if not name:
+                        for i, line in enumerate(first_lines[:5]):
+                            line = line.strip()
+                            if line and len(line) > 3 and not any(skip in line.lower() for skip in skip_keywords):
+                                # Use first substantial line as name
+                                name = line[:50]  # Limit length
+                                print(f"[DEBUG] Using first substantial line as name: {name}")
+                                break
+            except Exception as e:
+                print(f"[DEBUG] Error extracting name/email from CV: {str(e)}")
+                import traceback
+                traceback.print_exc()
+        
+        # If still no name, use a random number (MUST have a name for database)
+        if not name or not name.strip():
+            import random
+            random_number = random.randint(10000, 99999)
+            name = f"Kandidaat-{random_number}"
+            print(f"[DEBUG] Could not extract name from CV, using random name '{name}'")
+        
+        # Final safety check - ensure name is not None or empty at this point
+        if not name or not str(name).strip():
+            import random
+            random_number = random.randint(10000, 99999)
+            name = f"Kandidaat-{random_number}"
+            print(f"[DEBUG] CRITICAL: Name was still missing after extraction, using random name '{name}'")
+        
+        # Ensure name is a proper string
+        name = str(name).strip()
+        print(f"[DEBUG] Final name before candidate creation: '{name}'")
+        
         # Process motivational letter file if provided
         motivation_text = motivational_letter
         motivation_azure_used = False
@@ -2643,9 +2835,41 @@ async def upload_resume(
             candidate_db = existing_candidate
         else:
             # Create new candidate
+            # CRITICAL: Name MUST be set at this point (should have been extracted from CV or set to random number)
+            # Multiple safety checks to ensure name is NEVER None or empty
+            
+            print(f"[DEBUG] Before candidate creation - name value: {repr(name)}, type: {type(name)}")
+            
+            # Check 1: Handle None
+            if name is None:
+                import random
+                random_number = random.randint(10000, 99999)
+                name = f"Kandidaat-{random_number}"
+                print(f"[DEBUG] Check 1: Name was None, set to '{name}'")
+            
+            # Check 2: Convert to string and handle empty
+            name = str(name) if name is not None else f"Kandidaat-{random.randint(10000, 99999)}"
+            name = name.strip()
+            
+            # Check 3: If still empty after strip, use random
             if not name:
-                db.close()
-                raise HTTPException(status_code=400, detail="Naam is verplicht bij het aanmaken van een nieuwe kandidaat.")
+                import random
+                random_number = random.randint(10000, 99999)
+                name = f"Kandidaat-{random_number}"
+                print(f"[DEBUG] Check 3: Name was empty after strip, set to '{name}'")
+            
+            # Final verification
+            if not name or len(name.strip()) == 0:
+                import random
+                random_number = random.randint(10000, 99999)
+                name = f"Kandidaat-{random_number}"
+                print(f"[DEBUG] FINAL CHECK: Name was still invalid, forcing to '{name}'")
+            
+            name = str(name).strip()
+            print(f"[DEBUG] FINAL name value before CandidateDB creation: '{name}' (length: {len(name)})")
+            
+            # Assert that name is definitely set
+            assert name and len(name) > 0, f"Name must be set but was: {repr(name)}"
             
             # Check for duplicate candidate (prevent second agency from submitting same candidate)
             # Check by email if provided, otherwise by name (less reliable but better than nothing)
@@ -2781,9 +3005,39 @@ async def upload_resume(
                     db.close()
                     return response_payload
             
+            # ABSOLUTE FINAL check: name MUST be set (should have been extracted or set to random number by now)
+            # This should NEVER happen, but we check anyway
+            if not name or not str(name).strip():
+                import random
+                random_number = random.randint(10000, 99999)
+                name = f"Kandidaat-{random_number}"
+                print(f"[DEBUG] ABSOLUTE FINAL: Name was still missing when creating CandidateDB, forcing to '{name}'")
+            
+            # Convert to string and ensure it's not empty
+            name = str(name).strip()
+            if not name:
+                import random
+                name = f"Kandidaat-{random.randint(10000, 99999)}"
+            
+            print(f"[DEBUG] Creating CandidateDB with name='{name}' (type: {type(name)}, length: {len(name)})")
+            
+            # Final assertion - this will raise an error if name is still invalid
+            if not name or len(name) == 0:
+                import random
+                name = f"Kandidaat-{random.randint(10000, 99999)}"
+                print(f"[DEBUG] EMERGENCY: Name was empty, forced to '{name}'")
+            
+            # One more check - if name is still somehow invalid, use random
+            try:
+                assert name and len(str(name).strip()) > 0, f"Name validation failed: {repr(name)}"
+            except AssertionError:
+                import random
+                name = f"Kandidaat-{random.randint(10000, 99999)}"
+                print(f"[DEBUG] ASSERTION FAILED: Name was invalid, forced to '{name}'")
+            
             candidate_db = CandidateDB(
                 job_id=job_id,
-                name=name,
+                name=str(name).strip(),  # Guaranteed to be set and non-empty at this point
                 email=email,
                 resume_text=resume_text,
                 motivational_letter=motivation_text,
@@ -2810,12 +3064,60 @@ async def upload_resume(
                 pipeline_stage=pipeline_stage_str or 'introduced',
                 pipeline_status=pipeline_status_str or 'active'
             )
-            db.add(candidate_db)
-            db.commit()
-            db.refresh(candidate_db)
+            
+            # Try to add and commit, catch any database errors
+            try:
+                print(f"[DEBUG] About to add candidate to database with name='{candidate_db.name}' (type: {type(candidate_db.name)}, length: {len(str(candidate_db.name))})")
+                db.add(candidate_db)
+                db.commit()
+                print(f"[DEBUG] Candidate successfully added to database with ID: {candidate_db.id}")
+                db.refresh(candidate_db)
+            except Exception as db_error:
+                db.rollback()
+                error_msg = str(db_error)
+                print(f"[DEBUG] Database error when creating candidate: {error_msg}")
+                print(f"[DEBUG] Error type: {type(db_error)}")
+                import traceback
+                traceback.print_exc()
+                # If it's a constraint violation about name, we have a serious problem
+                if 'name' in error_msg.lower() or 'null' in error_msg.lower() or 'not null' in error_msg.lower():
+                    # This should NEVER happen, but if it does, try one more time with a guaranteed name
+                    import random
+                    new_name = f"Kandidaat-{random.randint(10000, 99999)}"
+                    print(f"[DEBUG] Retrying with forced name: '{new_name}'")
+                    candidate_db.name = new_name
+                    db.add(candidate_db)
+                    db.commit()
+                    db.refresh(candidate_db)
+                else:
+                    # Re-raise if it's a different error
+                    raise
             candidate_id = candidate_db.id
             if preferential_job_ids:
                 candidate_db.preferential_job_ids = ",".join(preferential_job_ids)
+                db.commit()
+        
+        # Create notification if candidate is submitted by recruiter for a job
+        if final_submitted_by_company_id and job_id:
+            # This is a recruiter submitting a candidate for a job
+            job = db.query(JobPostingDB).filter(JobPostingDB.id == job_id).first()
+            if job and job.company_id:
+                # Find company users for this job
+                company_users = db.query(UserDB).filter(
+                    UserDB.company_id == job.company_id,
+                    UserDB.is_active == True
+                ).all()
+                
+                for user in company_users:
+                    notification = NotificationDB(
+                        user_id=user.id,
+                        type="candidate_proposed",
+                        title=f"Nieuwe kandidaat voorgesteld: {candidate_db.name}",
+                        message=f"Recruiter heeft kandidaat '{candidate_db.name}' voorgesteld voor vacature '{job.title}'",
+                        related_candidate_id=candidate_db.id,
+                        related_job_id=job_id
+                    )
+                    db.add(notification)
                 db.commit()
         
         response_payload = {
@@ -2829,11 +3131,23 @@ async def upload_resume(
         db.close()
         return response_payload
         
+    except HTTPException:
+        # Re-raise HTTP exceptions (they have proper status codes)
+        raise
     except Exception as e:
-        return {
-            "success": False,
-            "error": str(e)
-        }
+        import traceback
+        error_trace = traceback.format_exc()
+        print(f"ERROR in upload_resume: {str(e)}")
+        print(f"Traceback: {error_trace}")
+        # Close DB if it's still open
+        try:
+            db.close()
+        except:
+            pass
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to upload resume: {str(e)}"
+        )
 
 @app.post("/upload-motivation-letter")
 async def upload_motivation_letter(
@@ -3783,6 +4097,13 @@ async def get_candidates(
             evaluations = db.query(EvaluationDB).filter(EvaluationDB.candidate_id == candidate.id).all()
             conversation_count = db.query(CandidateConversationDB).filter(CandidateConversationDB.candidate_id == candidate.id).count()
             
+            # Get company name if submitted by recruiter
+            submitted_by_company_name = None
+            if candidate.submitted_by_company_id:
+                recruiter_company = db.query(CompanyDB).filter(CompanyDB.id == candidate.submitted_by_company_id).first()
+                if recruiter_company:
+                    submitted_by_company_name = recruiter_company.name
+            
             result.append({
                 "id": candidate.id,
                 "name": candidate.name,
@@ -3797,6 +4118,8 @@ async def get_candidates(
                 "job_id": candidate.job_id,
                 "preferential_job_ids": candidate.preferential_job_ids,  # Include preferential job IDs
                 "company_note": candidate.company_note,  # Include company note from supplying company
+                "submitted_by_company_id": candidate.submitted_by_company_id,  # Include recruiter company ID
+                "submitted_by_company_name": submitted_by_company_name,  # Include recruiter company name
                 "evaluations": [
                     {
                         "id": eval.id,
@@ -3858,6 +4181,154 @@ async def get_candidate_conversations(candidate_id: str = Query(...), job_id: Op
     except Exception as e:
         print(f"Error fetching candidate conversations: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch conversations: {str(e)}")
+
+@app.post("/scheduled-appointments")
+async def create_scheduled_appointment(
+    candidate_id: str = Form(...),
+    job_id: str = Form(...),
+    scheduled_at: str = Form(...),  # ISO format datetime string
+    type: str = Form(...),
+    location: Optional[str] = Form(None),
+    notes: Optional[str] = Form(None),
+    conversation_id: Optional[str] = Form(None),
+    current_user: UserDB = Depends(get_current_user)
+):
+    """Create a scheduled appointment for a candidate"""
+    try:
+        db = SessionLocal()
+        
+        # Verify candidate and job exist
+        candidate = db.query(CandidateDB).filter(CandidateDB.id == candidate_id).first()
+        if not candidate:
+            db.close()
+            raise HTTPException(status_code=404, detail="Candidate not found")
+        
+        job = db.query(JobPostingDB).filter(JobPostingDB.id == job_id).first()
+        if not job:
+            db.close()
+            raise HTTPException(status_code=404, detail="Job not found")
+        
+        # Parse scheduled_at datetime
+        try:
+            from dateutil import parser
+            scheduled_datetime = parser.isoparse(scheduled_at)
+        except Exception as e:
+            db.close()
+            raise HTTPException(status_code=400, detail=f"Invalid datetime format: {str(e)}")
+        
+        # Create appointment
+        appointment = ScheduledAppointmentDB(
+            candidate_id=candidate_id,
+            job_id=job_id,
+            user_id=current_user.id,
+            conversation_id=conversation_id,
+            scheduled_at=scheduled_datetime,
+            type=type,
+            location=location,
+            notes=notes,
+            status='scheduled'
+        )
+        
+        db.add(appointment)
+        db.commit()
+        db.refresh(appointment)
+        
+        # Create notification for relevant users
+        if job.company_id:
+            company_users = db.query(UserDB).filter(
+                UserDB.company_id == job.company_id,
+                UserDB.is_active == True,
+                UserDB.id != current_user.id  # Don't notify the user who created it
+            ).all()
+            
+            for user in company_users:
+                notification = NotificationDB(
+                    user_id=user.id,
+                    type="appointment_scheduled",
+                    title=f"Afspraak gepland: {candidate.name}",
+                    message=f"Afspraak '{type}' gepland voor {candidate.name} op {scheduled_datetime.strftime('%d-%m-%Y %H:%M')}",
+                    related_candidate_id=candidate_id,
+                    related_job_id=job_id
+                )
+                db.add(notification)
+        
+        db.commit()
+        
+        appointment_dict = {
+            "id": appointment.id,
+            "candidate_id": appointment.candidate_id,
+            "job_id": appointment.job_id,
+            "user_id": appointment.user_id,
+            "conversation_id": appointment.conversation_id,
+            "scheduled_at": appointment.scheduled_at.isoformat(),
+            "type": appointment.type,
+            "location": appointment.location,
+            "notes": appointment.notes,
+            "status": appointment.status,
+            "created_at": appointment.created_at.isoformat() if appointment.created_at else None
+        }
+        
+        db.close()
+        return {
+            "success": True,
+            "appointment": appointment_dict
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.close()
+        raise HTTPException(status_code=500, detail=f"Failed to create appointment: {str(e)}")
+
+@app.get("/scheduled-appointments")
+async def get_scheduled_appointments(
+    candidate_id: Optional[str] = None,
+    job_id: Optional[str] = None,
+    current_user: UserDB = Depends(get_current_user)
+):
+    """Get scheduled appointments, optionally filtered by candidate or job"""
+    try:
+        db = SessionLocal()
+        
+        query = db.query(ScheduledAppointmentDB)
+        
+        # Filter by candidate or job if provided
+        if candidate_id:
+            query = query.filter(ScheduledAppointmentDB.candidate_id == candidate_id)
+        if job_id:
+            query = query.filter(ScheduledAppointmentDB.job_id == job_id)
+        
+        # Only show appointments for jobs in user's company
+        if current_user.company_id:
+            query = query.join(JobPostingDB, ScheduledAppointmentDB.job_id == JobPostingDB.id).filter(
+                JobPostingDB.company_id == current_user.company_id
+            )
+        
+        appointments = query.order_by(ScheduledAppointmentDB.scheduled_at.asc()).all()
+        
+        appointments_list = []
+        for appointment in appointments:
+            appointments_list.append({
+                "id": appointment.id,
+                "candidate_id": appointment.candidate_id,
+                "job_id": appointment.job_id,
+                "user_id": appointment.user_id,
+                "conversation_id": appointment.conversation_id,
+                "scheduled_at": appointment.scheduled_at.isoformat() if appointment.scheduled_at else None,
+                "type": appointment.type,
+                "location": appointment.location,
+                "notes": appointment.notes,
+                "status": appointment.status,
+                "created_at": appointment.created_at.isoformat() if appointment.created_at else None
+            })
+        
+        db.close()
+        return {
+            "success": True,
+            "appointments": appointments_list
+        }
+    except Exception as e:
+        db.close()
+        raise HTTPException(status_code=500, detail=f"Failed to get appointments: {str(e)}")
 
 @app.post("/candidate-conversations")
 async def create_candidate_conversation(request_data: CandidateConversationRequest):
@@ -3975,6 +4446,42 @@ async def update_candidate(
         if "company_note" in data:
             candidate.company_note = data["company_note"] if data["company_note"] else None
         
+        # Update job_id if provided (for assigning candidate to vacancy)
+        if "job_id" in data:
+            job_id = data["job_id"]
+            if job_id:
+                # Verify job exists
+                job = db.query(JobPostingDB).filter(JobPostingDB.id == job_id).first()
+                if not job:
+                    db.close()
+                    raise HTTPException(status_code=404, detail="Job not found")
+                
+                # If candidate doesn't have submitted_by_company_id yet, set it to recruiter's company
+                if not candidate.submitted_by_company_id and current_user.role == "recruiter" and current_user.company_id:
+                    candidate.submitted_by_company_id = current_user.company_id
+                
+                # Assign candidate to job
+                candidate.job_id = job_id
+                
+                # Create notification for company about new candidate
+                # Find company users for this job
+                if job.company_id:
+                    company_users = db.query(UserDB).filter(
+                        UserDB.company_id == job.company_id,
+                        UserDB.is_active == True
+                    ).all()
+                    
+                    for user in company_users:
+                        notification = NotificationDB(
+                            user_id=user.id,
+                            type="candidate_proposed",
+                            title=f"Nieuwe kandidaat voorgesteld: {candidate.name}",
+                            message=f"Recruiter heeft kandidaat '{candidate.name}' voorgesteld voor vacature '{job.title}'",
+                            related_candidate_id=candidate.id,
+                            related_job_id=job_id
+                        )
+                        db.add(notification)
+        
         db.commit()
         db.refresh(candidate)
         
@@ -4076,6 +4583,7 @@ async def get_candidate_detail(candidate_id: str):
             "email": candidate.email,
             "job_id": candidate.job_id,
             "job": job_info,
+            "job_title": job_info["title"] if job_info else None,  # Add job_title for frontend compatibility
             "resume_text": candidate.resume_text,
             "motivational_letter": candidate.motivational_letter,
             "experience_years": candidate.experience_years,
@@ -4102,6 +4610,7 @@ async def get_candidate_detail(candidate_id: str):
             "source": candidate.source,
             "pipeline_stage": candidate.pipeline_stage,
             "pipeline_status": candidate.pipeline_status,
+            "submitted_by_company_id": candidate.submitted_by_company_id,  # Add for frontend
         }
         db.close()
         return {"success": True, "candidate": result}
@@ -4451,13 +4960,21 @@ Deze gestructureerde informatie is expliciet opgeslagen voor deze kandidaat. Foc
             candidate_info = candidate_info_base
             
             print(f"Calling run_multi_agent_debate with {len(persona_prompts)} personas...")
-            debate_result = await run_multi_agent_debate(
-                persona_prompts=persona_prompts,
-                candidate_info=candidate_info,
-                job_info=job_info,
-                company_note=company_note_text if company_note_text else None,
-                track_timing=True
-            )
+            try:
+                debate_result = await run_multi_agent_debate(
+                    persona_prompts=persona_prompts,
+                    candidate_info=candidate_info,
+                    job_info=job_info,
+                    company_note=company_note_text if company_note_text else None,
+                    track_timing=True
+                )
+            except Exception as debate_error:
+                print(f"Error in run_multi_agent_debate: {debate_error}")
+                traceback.print_exc()
+                raise HTTPException(
+                    status_code=500, 
+                    detail=f"Debate execution failed: {str(debate_error)}"
+                )
             
             # Handle tuple return (response, timing_data)
             try:
@@ -4494,7 +5011,6 @@ Deze gestructureerde informatie is expliciet opgeslagen voor deze kandidaat. Foc
                         print(f"⚠ Response is not valid JSON string, first 200 chars: {str(response)[:200]}")
             except Exception as unpack_error:
                 print(f"Error unpacking debate result: {unpack_error}")
-                import traceback
                 traceback.print_exc()
                 raise HTTPException(status_code=500, detail=f"Failed to process debate result: {str(unpack_error)}")
             
@@ -4503,7 +5019,6 @@ Deze gestructureerde informatie is expliciet opgeslagen voor deze kandidaat. Foc
             
         except ImportError as e:
             print(f"ImportError: {e}")
-            import traceback
             traceback.print_exc()
             # Fallback to simple OpenAI if LangChain not available
             print("LangChain not available, falling back to simple debate...")
@@ -4616,7 +5131,6 @@ Each persona should provide their evaluation and then engage in a professional d
                     # Don't fail the whole request if notifications fail
         except Exception as e:
             print(f"Error saving debate result: {str(e)}")
-            import traceback
             traceback.print_exc()
             # Continue even if saving fails
         
@@ -4660,7 +5174,6 @@ Each persona should provide their evaluation and then engage in a professional d
                 debate_timing_data = processed_timing
         except Exception as timing_error:
             print(f"Error processing timing data: {timing_error}")
-            import traceback
             traceback.print_exc()
             debate_timing_data = {}
         
@@ -5751,11 +6264,17 @@ async def get_recruiter_vacancies(
         if not include_new:
             # If include_new is False, only show assigned vacancies
             all_vacancies_query = all_vacancies_query.filter(JobPostingDB.assigned_agency_id == current_user.id)
-        else:
-            # If include_new is True (default), show all vacancies (assigned or not)
-            # Don't filter by assigned_agency_id - we'll mark them as assigned/not assigned in the response
+        # else: If include_new is True (default), show all vacancies (assigned or not)
+        # Don't filter by assigned_agency_id - we'll mark them as assigned/not assigned in the response
         
         all_jobs = all_vacancies_query.all()
+        
+        # Debug logging
+        print(f"[DEBUG get_recruiter_vacancies] Found {len(all_jobs)} jobs")
+        print(f"[DEBUG get_recruiter_vacancies] Recruiter user: {current_user.email}, company_id: {current_user.company_id}")
+        print(f"[DEBUG get_recruiter_vacancies] include_new: {include_new}")
+        for job in all_jobs[:3]:  # Log first 3 jobs
+            print(f"[DEBUG] Job: {job.title}, company_id: {job.company_id}, is_active: {getattr(job, 'is_active', 'N/A')}")
         
         result = []
         assigned_job_ids = set()
@@ -5778,6 +6297,9 @@ async def get_recruiter_vacancies(
                     CandidateDB.submitted_by_company_id == current_user.company_id
                 ).count()
             
+            # Determine if vacancy is "new" (no candidates submitted by this recruiter yet)
+            is_new = candidates_count == 0 and not is_assigned
+            
             result.append({
                 "id": job.id,
                 "title": job.title,
@@ -5790,6 +6312,7 @@ async def get_recruiter_vacancies(
                 "is_active": job.is_active if hasattr(job, 'is_active') else True,
                 "assigned_agency_id": job.assigned_agency_id,
                 "is_assigned": is_assigned,
+                "is_new": is_new,  # Mark as new if no candidates submitted yet
                 "candidates_count": candidates_count,
                 "company_id": job.company_id if hasattr(job, 'company_id') else None
             })
@@ -5809,12 +6332,12 @@ async def get_recruiter_vacancies(
 
 @app.get("/recruiter/candidates")
 async def get_recruiter_candidates(job_id: Optional[str] = None, current_user: UserDB = Depends(require_role(["admin", "recruiter"]))):
-    """Get candidates submitted by the current recruiter"""
+    """Get ALL candidates for recruiter (recruiter should see all candidates in the system)"""
     try:
         db = SessionLocal()
         
-        # Get candidates submitted by this recruiter's company
-        query = db.query(CandidateDB).filter(CandidateDB.submitted_by_company_id == current_user.company_id)
+        # Get ALL candidates (recruiter should see all candidates, not just their own)
+        query = db.query(CandidateDB)
         
         if job_id:
             query = query.filter(CandidateDB.job_id == job_id)
@@ -5832,15 +6355,37 @@ async def get_recruiter_candidates(job_id: Optional[str] = None, current_user: U
                 except:
                     skill_tags = candidate.skill_tags
             
+            # Get evaluation status for this candidate (check EvaluationResultDB, not EvaluationDB)
+            evaluations = db.query(EvaluationResultDB).filter(
+                EvaluationResultDB.candidate_id == candidate.id,
+                EvaluationResultDB.result_type == 'evaluation'
+            ).all()
+            has_evaluation = len(evaluations) > 0
+            
+            # Get job info if assigned
+            job_info = None
+            if candidate.job_id:
+                job = db.query(JobPostingDB).filter(JobPostingDB.id == candidate.job_id).first()
+                if job:
+                    job_info = {
+                        "id": job.id,
+                        "title": job.title,
+                        "company": job.company
+                    }
+            
             result.append({
                 "id": candidate.id,
                 "name": candidate.name,
                 "email": candidate.email,
                 "job_id": candidate.job_id,
+                "job": job_info,
                 "created_at": candidate.created_at.isoformat() if candidate.created_at else None,
                 "pipeline_stage": candidate.pipeline_stage,
                 "pipeline_status": candidate.pipeline_status,
-                "skill_tags": skill_tags
+                "skill_tags": skill_tags,
+                "has_evaluation": has_evaluation,
+                "evaluation_count": len(evaluations),
+                "submitted_by_company_id": candidate.submitted_by_company_id
             })
         
         db.close()

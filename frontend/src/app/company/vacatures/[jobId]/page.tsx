@@ -5,6 +5,7 @@ import { useParams, useRouter } from 'next/navigation';
 import ProtectedRoute from '../../../../components/ProtectedRoute';
 import CompanyNavigation from '../../../../components/CompanyNavigation';
 import { buildAnalysisSections, buildExtensionBlock, AnalysisSection, ExtensionBlock } from '../../../../utils/analysis';
+import VacancyWorkflowVisualization from '../../../../components/VacancyWorkflowVisualization';
 
 interface JobDescription {
   id: string;
@@ -62,6 +63,9 @@ export default function JobDetailPage() {
   const [isMatching, setIsMatching] = useState(false);
   const [showMatches, setShowMatches] = useState(false);
   const [selectedCandidatesForCompare, setSelectedCandidatesForCompare] = useState<string[]>([]);
+  const [includePastCandidates, setIncludePastCandidates] = useState(false);
+  const [allCandidates, setAllCandidates] = useState<Candidate[]>([]);
+  const [allJobs, setAllJobs] = useState<JobDescription[]>([]);
   const [showScheduleModal, setShowScheduleModal] = useState(false);
   const [scheduledConversationId, setScheduledConversationId] = useState<string | null>(null);
   const [scheduleForm, setScheduleForm] = useState({
@@ -75,18 +79,42 @@ export default function JobDetailPage() {
 
   useEffect(() => {
     loadData();
+    // Auto-refresh pipeline every 15 seconds
+    const interval = setInterval(() => {
+      loadData();
+    }, 15000);
+    return () => clearInterval(interval);
   }, [jobId]);
 
   const loadData = async () => {
     setLoading(true);
     setError(null);
     try {
+      const { getAuthHeaders } = await import('../../../../lib/auth');
+      const headers = getAuthHeaders();
+      
       const [jobsRes, candidatesRes, resultsRes, conversationsRes] = await Promise.all([
-        fetch('/api/job-descriptions'),
-        fetch(`/api/candidates?job_id=${jobId}`),
-        fetch(`/api/evaluation-results?job_id=${jobId}`),
-        fetch(`/api/candidate-conversations?job_id=${jobId}`)
+        fetch('/api/job-descriptions', { headers }),
+        fetch(`/api/candidates?job_id=${jobId}`, { headers }),
+        fetch(`/api/evaluation-results?job_id=${jobId}`, { headers }),
+        fetch(`/api/candidate-conversations?job_id=${jobId}`, { headers })
       ]);
+
+      // Also load all candidates and jobs for comparison feature
+      const [allCandidatesRes, allJobsRes] = await Promise.all([
+        fetch('/api/candidates', { headers }),
+        fetch('/api/job-descriptions', { headers })
+      ]);
+      
+      if (allCandidatesRes.ok) {
+        const allCandData = await allCandidatesRes.json();
+        setAllCandidates(allCandData.candidates || []);
+      }
+      
+      if (allJobsRes.ok) {
+        const allJobsData = await allJobsRes.json();
+        setAllJobs(allJobsData.jobs || []);
+      }
 
       if (!jobsRes.ok) {
         throw new Error('Kon vacature niet laden');
@@ -262,25 +290,38 @@ export default function JobDetailPage() {
     
     setIsSavingSchedule(true);
     try {
-      // TODO: Toekomstige integratie met bestaande agenda's
+      const scheduledDateTime = new Date(`${scheduleForm.date}T${scheduleForm.time}`);
+      const isoDateTime = scheduledDateTime.toISOString();
+      
+      // Save appointment to database
+      const response = await fetch('/api/scheduled-appointments', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          candidate_id: conversationModal.candidate.id,
+          job_id: jobId,
+          scheduled_at: isoDateTime,
+          type: scheduleForm.type,
+          location: scheduleForm.location || 'Teams/Zoom',
+          notes: scheduleForm.notes || '',
+          conversation_id: scheduledConversationId,
+        }),
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+        throw new Error(errorData.error || errorData.detail || 'Fout bij opslaan afspraak');
+      }
+      
+      // TODO: Future calendar integration
       // - Integreer met Google Calendar API om automatisch afspraken te creëren en uitnodigingen te versturen
       // - Integreer met Microsoft Outlook/Exchange om afspraken in Outlook agenda te plaatsen
       // - Stuur automatisch calendar invites (ICS-bestanden) naar kandidaat en relevante teamleden
       // - Synchroniseer met bestaande beschikbaarheid van interviewers
-      // - Voeg reminders en notificaties toe voor zowel recruiter als kandidaat
-      // - Sla geplande afspraken op in database voor tracking en follow-up
       
-      const scheduledDateTime = new Date(`${scheduleForm.date}T${scheduleForm.time}`);
-      
-      // For now, we'll just show a confirmation
-      // In a full implementation, this would:
-      // 1. Create calendar event via API (Google Calendar / Outlook)
-      // 2. Send calendar invite to candidate
-      // 3. Send invite to relevant team members
-      // 4. Save appointment to database with candidate_id, job_id, scheduled_at, etc.
-      // 5. Set up reminders
-      
-      alert(`Volgende stap gepland voor ${conversationModal.candidate.name}:\n${scheduledDateTime.toLocaleString('nl-NL')}\n\nType: ${scheduleForm.type}\nLocatie: ${scheduleForm.location}\n\n(Toekomst: Dit zal automatisch worden toegevoegd aan agenda's en uitnodigingen worden verstuurd)`);
+      alert(`Afspraak opgeslagen voor ${conversationModal.candidate.name}:\n${scheduledDateTime.toLocaleString('nl-NL')}\n\nType: ${scheduleForm.type}\nLocatie: ${scheduleForm.location}\n\n(Toekomst: Dit zal automatisch worden toegevoegd aan agenda's en uitnodigingen worden verstuurd)`);
       
       setShowScheduleModal(false);
       setScheduledConversationId(null);
@@ -291,8 +332,11 @@ export default function JobDetailPage() {
         location: 'Teams/Zoom',
         notes: '',
       });
+      
+      // Reload data to show the new appointment
+      await loadData();
     } catch (error: any) {
-      alert(error.message || 'Plannen mislukt');
+      alert(`Fout bij plannen: ${error.message || 'Onbekende fout'}`);
     } finally {
       setIsSavingSchedule(false);
     }
@@ -324,7 +368,16 @@ export default function JobDetailPage() {
   const getCandidateStage = (candidate: Candidate): string => {
     // Use pipeline_stage from backend if available, otherwise compute from activity
     if (candidate.pipeline_stage) {
-      return candidate.pipeline_stage;
+      // Map old stages to new stages if needed
+      const stageMapping: Record<string, string> = {
+        'introduced': 'introduced', // Vacature naar Recruiter
+        'review': 'review', // Kandidaat Toegevoegd
+        'first_interview': 'first_interview', // AI Analyse
+        'second_interview': 'second_interview', // Eerste Interview
+        'offer': 'offer', // Tweede Interview
+        'complete': 'complete', // Aanbod & Voltooid
+      };
+      return stageMapping[candidate.pipeline_stage] || candidate.pipeline_stage;
     }
     
     // Fallback: compute stage based on activity
@@ -334,11 +387,22 @@ export default function JobDetailPage() {
     const hasDebates = candidateResults.some(r => r.result_type === 'debate');
     const conversationCount = candidateConversations.length;
 
+    // New logic: 
+    // - introduced: Vacature sent to recruiter (candidate exists but no activity)
+    // - review: Candidate added (candidate exists)
+    // - first_interview: AI Analysis done (has evaluations/debates)
+    // - second_interview: First interview done (1 conversation)
+    // - offer: Second interview done (2+ conversations)
+    // - complete: Process complete (accepted/rejected or many conversations)
+    
     if (!hasEvaluations && !hasDebates && conversationCount === 0) return 'introduced';
-    if (conversationCount === 0) return 'review';
-    if (conversationCount === 1) return 'first_interview';
-    if (conversationCount >= 2 && conversationCount < 4) return 'second_interview';
-    return 'complete';
+    if (hasEvaluations || hasDebates) {
+      if (conversationCount === 0) return 'first_interview'; // AI Analysis done
+      if (conversationCount === 1) return 'second_interview'; // First interview
+      if (conversationCount >= 2) return 'offer'; // Second interview
+    }
+    if (candidate.pipeline_status === 'accepted' || candidate.pipeline_status === 'rejected') return 'complete';
+    return 'review'; // Default: candidate added
   };
 
   const handleCandidateDragStart = (e: React.DragEvent, candidateId: string) => {
@@ -400,36 +464,36 @@ export default function JobDetailPage() {
     setDragOverStage(null);
   };
 
-  // Pipeline stages configuration
+  // Pipeline stages configuration - Updated per user requirements
   const pipelineStages = {
     introduced: { 
-      title: 'Geïntroduceerd', 
-      description: 'Nieuwe kandidaten die zijn toegevoegd',
-      color: 'bg-gray-100 border-gray-300 text-gray-700'
-    },
-    review: { 
-      title: 'Review/Vergelijking', 
-      description: 'Kandidaten worden beoordeeld en vergeleken',
+      title: 'Vacature naar Recruiter', 
+      description: 'Vacature is verstuurd naar recruitment bedrijf',
       color: 'bg-blue-50 border-blue-300 text-blue-700'
     },
+    review: { 
+      title: 'Kandidaat Toegevoegd', 
+      description: 'Recruiter heeft kandidaat toegevoegd',
+      color: 'bg-green-50 border-green-300 text-green-700'
+    },
     first_interview: { 
+      title: 'AI Analyse', 
+      description: 'AI analyse heeft plaatsgevonden',
+      color: 'bg-purple-50 border-purple-300 text-purple-700'
+    },
+    second_interview: { 
       title: 'Eerste Interview', 
       description: 'Eerste gesprek + evaluatie',
       color: 'bg-yellow-50 border-yellow-300 text-yellow-700'
     },
-    second_interview: { 
+    offer: { 
       title: 'Tweede Interview', 
       description: 'Tweede gesprek/technische test + evaluatie',
       color: 'bg-orange-50 border-orange-300 text-orange-700'
     },
-    offer: { 
-      title: 'Aanbod', 
-      description: 'Aanbod is gedaan',
-      color: 'bg-purple-50 border-purple-300 text-purple-700'
-    },
     complete: { 
-      title: 'Voltooid', 
-      description: 'Proces afgerond (succesvol of niet)',
+      title: 'Aanbod & Voltooid', 
+      description: 'Aanbod gedaan en proces voltooid',
       color: 'bg-green-50 border-green-300 text-green-700'
     },
   };
@@ -551,45 +615,34 @@ export default function JobDetailPage() {
           {/* Overview Tab */}
           {activeTab === 'overview' && (
             <div className="space-y-6">
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                <div className="bg-white rounded-xl border border-gray-200 p-4">
-                  <p className="text-sm text-barnes-dark-gray mb-1">Totaal kandidaten</p>
-                  <p className="text-2xl font-bold text-barnes-dark-violet">{candidates.length}</p>
-                </div>
-                <div className="bg-white rounded-xl border border-gray-200 p-4">
-                  <p className="text-sm text-barnes-dark-gray mb-1">Evaluaties</p>
-                  <p className="text-2xl font-bold text-barnes-violet">{evaluations.length}</p>
-                </div>
-                <div className="bg-white rounded-xl border border-gray-200 p-4">
-                  <p className="text-sm text-barnes-dark-gray mb-1">Debatten</p>
-                  <p className="text-2xl font-bold text-barnes-orange">{debates.length}</p>
-                </div>
-                <div className="bg-white rounded-xl border border-gray-200 p-4">
-                  <p className="text-sm text-barnes-dark-gray mb-1">Gesprekken</p>
-                  <p className="text-2xl font-bold text-barnes-dark-violet">{conversations.length}</p>
-                </div>
-              </div>
-
-              {/* Candidate Pipeline */}
-              <div className="bg-white rounded-xl border border-gray-200 p-6">
-                <div className="flex items-center justify-between mb-4">
-                  <h2 className="text-xl font-semibold text-barnes-dark-violet">Kandidaat Pipeline</h2>
-                  <div className="text-sm text-barnes-dark-gray">
-                    {candidates.length} totaal kandidaat{candidates.length !== 1 ? 'en' : ''}
+              {/* Candidate Pipeline - Made More Prominent */}
+              <div className="bg-gradient-to-br from-barnes-violet/10 to-barnes-dark-violet/10 rounded-2xl border-2 border-barnes-violet/30 p-8 shadow-lg">
+                <div className="flex items-center justify-between mb-6">
+                  <div>
+                    <h2 className="text-2xl font-bold text-barnes-dark-violet mb-2">Kandidaat Pipeline</h2>
+                    <p className="text-sm text-barnes-dark-gray">
+                      Volg de voortgang van kandidaten door het recruitment proces
+                    </p>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-3xl font-bold text-barnes-dark-violet">{candidates.length}</div>
+                    <div className="text-sm text-barnes-dark-gray">
+                      totaal kandidaat{candidates.length !== 1 ? 'en' : ''}
+                    </div>
                   </div>
                 </div>
                 
-                {/* Progress Bar */}
-                <div className="mb-6">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-sm font-medium text-barnes-dark-gray">Pipeline Voortgang</span>
-                    <span className="text-sm font-semibold text-barnes-dark-violet">
+                {/* Progress Bar - More Prominent */}
+                <div className="mb-8 bg-white/50 rounded-xl p-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="text-base font-semibold text-barnes-dark-violet">Pipeline Voortgang</span>
+                    <span className="text-lg font-bold text-barnes-dark-violet">
                       {Object.values(candidateStages).reduce((sum, stage) => sum + stage.length, 0)} / {candidates.length}
                     </span>
                   </div>
-                  <div className="w-full bg-gray-200 rounded-full h-3 overflow-hidden">
+                  <div className="w-full bg-gray-200 rounded-full h-4 overflow-hidden shadow-inner">
                     <div 
-                      className="bg-gradient-to-r from-barnes-violet to-purple-600 h-3 rounded-full transition-all duration-500"
+                      className="bg-gradient-to-r from-barnes-violet via-purple-500 to-purple-600 h-4 rounded-full transition-all duration-500 shadow-md"
                       style={{ 
                         width: `${(candidates.length > 0 ? (candidateStages.complete.length / candidates.length) * 100 : 0)}%` 
                       }}
@@ -597,7 +650,7 @@ export default function JobDetailPage() {
                   </div>
                 </div>
                 
-                <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
                   {Object.entries(pipelineStages).map(([key, stageConfig]) => {
                     const stageCandidates = candidateStages[key as keyof typeof candidateStages];
                     return (
@@ -606,15 +659,20 @@ export default function JobDetailPage() {
                         onDragOver={(e) => handleCandidateDragOver(e, key)}
                         onDragLeave={handleCandidateDragLeave}
                         onDrop={(e) => handleCandidateDrop(e, key)}
-                        className={`rounded-lg border-2 p-4 transition-all ${
+                        className={`rounded-xl border-2 p-5 transition-all bg-white shadow-md ${
                           dragOverStage === key
-                            ? 'border-barnes-violet bg-barnes-violet/10 scale-105 shadow-lg'
+                            ? 'border-barnes-violet bg-barnes-violet/10 scale-105 shadow-xl'
                             : stageConfig.color
                         }`}
                       >
-                        <h3 className="text-sm font-semibold mb-1">{stageConfig.title}</h3>
-                        <p className="text-xs opacity-75 mb-3">{stageConfig.description}</p>
-                        <p className="text-xs font-medium mb-3">{stageCandidates.length} kandidaat{stageCandidates.length !== 1 ? 'en' : ''}</p>
+                        <h3 className="text-base font-bold mb-2">{stageConfig.title}</h3>
+                        <p className="text-xs opacity-80 mb-3">{stageConfig.description}</p>
+                        <div className="flex items-center justify-between mb-3">
+                          <p className="text-sm font-semibold">{stageCandidates.length} kandidaat{stageCandidates.length !== 1 ? 'en' : ''}</p>
+                          {stageCandidates.length > 0 && (
+                            <span className="w-2 h-2 rounded-full bg-green-500"></span>
+                          )}
+                        </div>
                         <div className="space-y-2 max-h-64 overflow-y-auto">
                           {stageCandidates.map(candidate => (
                             <div
@@ -664,6 +722,47 @@ export default function JobDetailPage() {
                       </div>
                     );
                   })}
+                </div>
+              </div>
+
+              {/* Workflow Visualization - Made Less Visible (Collapsible) */}
+              <details className="bg-white/50 rounded-xl border border-gray-200 p-4">
+                <summary className="cursor-pointer text-sm font-medium text-barnes-dark-gray hover:text-barnes-violet list-none">
+                  <div className="flex items-center justify-between">
+                    <span>Uitgebreide Voortgang (klik om uit te klappen)</span>
+                    <span className="text-xs">▼</span>
+                  </div>
+                </summary>
+                <div className="mt-4">
+                  <VacancyWorkflowVisualization
+                    vacancyId={jobId}
+                    vacancyCreatedAt={job.created_at}
+                    recruiterNotified={true}
+                    candidatesAdded={candidates.length}
+                    candidatesProposed={candidates.some(c => (c as any).submitted_by_company_id != null)}
+                    evaluationStarted={evaluations.length > 0}
+                    debateCompleted={debates.length > 0}
+                    decisionMade={candidates.some(c => c.pipeline_status === 'accepted' || c.pipeline_status === 'rejected')}
+                  />
+                </div>
+              </details>
+
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                <div className="bg-white rounded-xl border border-gray-200 p-4">
+                  <p className="text-sm text-barnes-dark-gray mb-1">Totaal kandidaten</p>
+                  <p className="text-2xl font-bold text-barnes-dark-violet">{candidates.length}</p>
+                </div>
+                <div className="bg-white rounded-xl border border-gray-200 p-4">
+                  <p className="text-sm text-barnes-dark-gray mb-1">Evaluaties</p>
+                  <p className="text-2xl font-bold text-barnes-violet">{evaluations.length}</p>
+                </div>
+                <div className="bg-white rounded-xl border border-gray-200 p-4">
+                  <p className="text-sm text-barnes-dark-gray mb-1">Debatten</p>
+                  <p className="text-2xl font-bold text-barnes-orange">{debates.length}</p>
+                </div>
+                <div className="bg-white rounded-xl border border-gray-200 p-4">
+                  <p className="text-sm text-barnes-dark-gray mb-1">Gesprekken</p>
+                  <p className="text-2xl font-bold text-barnes-dark-violet">{conversations.length}</p>
                 </div>
               </div>
             </div>
@@ -904,14 +1003,25 @@ export default function JobDetailPage() {
               <div className="bg-white rounded-xl border border-gray-200 p-6">
                 <div className="flex items-center justify-between mb-4">
                   <h2 className="text-xl font-semibold text-barnes-dark-violet">Vergelijk Kandidaten</h2>
-                  <div className="text-sm text-barnes-dark-gray">
-                    Selecteer 2-5 kandidaten om te vergelijken
+                  <div className="flex items-center gap-4">
+                    <label className="flex items-center gap-2 text-sm text-barnes-dark-gray">
+                      <input
+                        type="checkbox"
+                        checked={includePastCandidates}
+                        onChange={(e) => setIncludePastCandidates(e.target.checked)}
+                        className="w-4 h-4 text-barnes-violet focus:ring-barnes-violet border-gray-300 rounded"
+                      />
+                      Inclusief kandidaten van andere vacatures
+                    </label>
+                    <div className="text-sm text-barnes-dark-gray">
+                      Selecteer 2-5 kandidaten om te vergelijken
+                    </div>
                   </div>
                 </div>
                 
-                {candidates.length === 0 ? (
+                {(includePastCandidates ? allCandidates : candidates).length === 0 ? (
                   <p className="text-sm text-barnes-dark-gray">
-                    Nog geen kandidaten gekoppeld aan deze vacature.
+                    Nog geen kandidaten beschikbaar.
                   </p>
                 ) : (
                   <>
@@ -919,7 +1029,9 @@ export default function JobDetailPage() {
                     <div className="mb-6 p-4 bg-barnes-light-gray rounded-lg">
                       <p className="text-sm font-medium text-barnes-dark-violet mb-3">Selecteer kandidaten om te vergelijken:</p>
                       <div className="flex flex-wrap gap-2">
-                        {candidates.map(candidate => {
+                        {(includePastCandidates ? allCandidates : candidates).map(candidate => {
+                          const candidateJob = candidate.job_id ? allJobs.find(j => j.id === candidate.job_id) : null;
+                          const jobTitle = candidateJob ? candidateJob.title : (candidate.job_id === jobId ? job?.title : 'Onbekende vacature');
                           const isSelected = selectedCandidatesForCompare.includes(candidate.id);
                           return (
                             <button
@@ -943,6 +1055,9 @@ export default function JobDetailPage() {
                               disabled={!isSelected && selectedCandidatesForCompare.length >= 5}
                             >
                               {candidate.name} {isSelected && '✓'}
+                              {includePastCandidates && candidate.job_id !== jobId && (
+                                <span className="ml-2 text-xs text-barnes-dark-gray">({jobTitle})</span>
+                              )}
                             </button>
                           );
                         })}
@@ -965,12 +1080,17 @@ export default function JobDetailPage() {
                             <tr className="border-b-2 border-gray-300">
                               <th className="p-3 text-left text-sm font-semibold text-barnes-dark-violet bg-barnes-light-gray sticky left-0 z-10">Meting</th>
                               {selectedCandidatesForCompare.map(candidateId => {
-                                const candidate = candidates.find(c => c.id === candidateId);
+                                const candidate = (includePastCandidates ? allCandidates : candidates).find(c => c.id === candidateId);
+                                const candidateJob = candidate?.job_id ? allJobs.find(j => j.id === candidate.job_id) : null;
+                                const jobTitle = candidateJob ? candidateJob.title : (candidate?.job_id === jobId ? job?.title : 'Onbekende vacature');
                                 return (
                                   <th key={candidateId} className="p-3 text-center text-sm font-semibold text-barnes-dark-violet bg-barnes-light-gray min-w-[200px]">
                                     <div>
                                       <p className="font-semibold">{candidate?.name || 'Onbekend'}</p>
                                       <p className="text-xs text-barnes-dark-gray font-normal">{candidate?.email || ''}</p>
+                                      {includePastCandidates && candidate?.job_id !== jobId && (
+                                        <p className="text-xs text-barnes-violet font-normal mt-1">({jobTitle})</p>
+                                      )}
                                     </div>
                                   </th>
                                 );
@@ -982,7 +1102,7 @@ export default function JobDetailPage() {
                             <tr className="border-b border-gray-200 hover:bg-gray-50">
                               <td className="p-3 text-sm font-medium text-barnes-dark-gray bg-barnes-light-gray sticky left-0 z-10">Pipeline Status</td>
                               {selectedCandidatesForCompare.map(candidateId => {
-                                const candidate = candidates.find(c => c.id === candidateId);
+                                const candidate = (includePastCandidates ? allCandidates : candidates).find(c => c.id === candidateId);
                                 const stage = getCandidateStage(candidate!);
                                 const stageConfig = pipelineStages[stage as keyof typeof pipelineStages];
                                 return (
@@ -1078,7 +1198,7 @@ export default function JobDetailPage() {
                             <tr className="border-b border-gray-200 hover:bg-gray-50">
                               <td className="p-3 text-sm font-medium text-barnes-dark-gray bg-barnes-light-gray sticky left-0 z-10">Dagen in Proces</td>
                               {selectedCandidatesForCompare.map(candidateId => {
-                                const candidate = candidates.find(c => c.id === candidateId);
+                                const candidate = (includePastCandidates ? allCandidates : candidates).find(c => c.id === candidateId);
                                 if (!candidate) return <td key={candidateId} className="p-3 text-center text-sm">—</td>;
                                 
                                 const createdDate = new Date(candidate.created_at);
@@ -1097,7 +1217,7 @@ export default function JobDetailPage() {
                             <tr className="border-b border-gray-200">
                               <td className="p-3 text-sm font-medium text-barnes-dark-gray bg-barnes-light-gray sticky left-0 z-10">Acties</td>
                               {selectedCandidatesForCompare.map(candidateId => {
-                                const candidate = candidates.find(c => c.id === candidateId);
+                                const candidate = (includePastCandidates ? allCandidates : candidates).find(c => c.id === candidateId);
                                 return (
                                   <td key={candidateId} className="p-3 text-center">
                                     <div className="flex flex-col gap-2 items-center">
