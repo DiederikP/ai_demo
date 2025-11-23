@@ -1441,6 +1441,12 @@ async def login(login_data: LoginRequest):
         print(f"Email: {login_data.email}")
         print(f"Email (lowercase): {login_data.email.lower()}")
         
+        # Ensure required users exist before checking
+        try:
+            run_auto_setup_once()
+        except Exception as e:
+            print(f"Warning: Could not run auto-setup during login: {e}")
+        
         user = db.query(UserDB).filter(UserDB.email == login_data.email.lower()).first()
         
         if not user:
@@ -1448,7 +1454,7 @@ async def login(login_data: LoginRequest):
             print(f"Available users in database:")
             all_users = db.query(UserDB).all()
             for u in all_users:
-                print(f"  - {u.email} (role: {u.role}, active: {u.is_active})")
+                print(f"  - {u.email} (role: {u.role}, active: {u.is_active}, has_password: {bool(u.password_hash)})")
             print(f"{'='*60}\n")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
