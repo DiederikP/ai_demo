@@ -18,13 +18,12 @@ export default function CompanyLogin() {
       // Small delay to prevent immediate redirect (allows user to see login page if needed)
       const timer = setTimeout(() => {
         const role = user.role?.toLowerCase();
-        if (role === 'admin' || role === 'company_admin' || role === 'company_user') {
-          router.push('/company/dashboard');
-        } else if (role === 'recruiter') {
+        if (role === 'recruiter') {
           router.push('/recruiter/dashboard');
         } else if (role === 'candidate') {
           router.push('/candidate/dashboard');
         } else {
+          // Admin, company_admin, company_user all go to company dashboard
           router.push('/company/dashboard');
         }
       }, 500); // 500ms delay
@@ -59,14 +58,13 @@ export default function CompanyLogin() {
       const role = updatedUser?.role?.toLowerCase() || user?.role?.toLowerCase();
       console.log('[Company Login Page] User role:', role);
       
-      // Redirect based on role - prioritize company portal for company users
-      if (role === 'admin' || role === 'company_admin' || role === 'company_user') {
-        router.push('/company/dashboard');
-      } else if (role === 'recruiter') {
+      // Redirect based on role
+      if (role === 'recruiter') {
         router.push('/recruiter/dashboard');
       } else if (role === 'candidate') {
         router.push('/candidate/dashboard');
       } else {
+        // Admin, company_admin, company_user all go to company dashboard
         router.push('/company/dashboard');
       }
     } catch (err: any) {

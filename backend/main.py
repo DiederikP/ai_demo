@@ -828,6 +828,24 @@ def seed_sample_company_users():
 ensure_column_exists("users", "company_id", "TEXT")
 ensure_column_exists("users", "password_hash", "TEXT")
 ensure_column_exists("evaluations", "job_id", "TEXT")
+# Ensure extended candidate fields exist (for both SQLite and PostgreSQL)
+ensure_column_exists("candidates", "motivation_reason", "TEXT")
+ensure_column_exists("candidates", "test_results", "TEXT")
+ensure_column_exists("candidates", "age", "INTEGER")
+ensure_column_exists("candidates", "years_experience", "INTEGER")
+ensure_column_exists("candidates", "skill_tags", "TEXT")
+ensure_column_exists("candidates", "prior_job_titles", "TEXT")
+ensure_column_exists("candidates", "certifications", "TEXT")
+ensure_column_exists("candidates", "education_level", "TEXT")
+ensure_column_exists("candidates", "location", "TEXT")
+ensure_column_exists("candidates", "communication_level", "TEXT")
+ensure_column_exists("candidates", "availability_per_week", "INTEGER")
+ensure_column_exists("candidates", "notice_period", "TEXT")
+ensure_column_exists("candidates", "salary_expectation", "INTEGER")
+ensure_column_exists("candidates", "source", "TEXT")
+ensure_column_exists("candidates", "submitted_by_company_id", "TEXT")
+ensure_column_exists("candidates", "pipeline_stage", "TEXT")
+ensure_column_exists("candidates", "pipeline_status", "TEXT")
 # Ensure scheduled_appointments table exists (created by Base.metadata.create_all, but ensure columns exist)
 default_company_id = ensure_default_company()
 assign_users_without_company(default_company_id)
@@ -877,9 +895,12 @@ def auto_setup_users():
             "user@recruiter.nl",
             "user@kandidaat.nl"
         ]
-        existing_users = db.query(UserDB).filter(UserDB.email.in_(required_emails)).all()
-        existing_emails = {u.email for u in existing_users}
-        missing_emails = set(required_emails) - existing_emails
+        # Use case-insensitive matching for emails
+        existing_users = db.query(UserDB).filter(
+            func.lower(UserDB.email).in_([email.lower() for email in required_emails])
+        ).all()
+        existing_emails = {u.email.lower() for u in existing_users}
+        missing_emails = set([email.lower() for email in required_emails]) - existing_emails
         
         if missing_emails:
             print(f"\n{'='*60}")
@@ -906,7 +927,7 @@ def auto_setup_users():
                 print(f"✓ Using existing company: {main_company.name} (ID: {main_company.id})")
             
             # Create admin user
-            if "User@admin.nl" in missing_emails:
+            if "user@admin.nl" in missing_emails:
                 admin_user = UserDB(
                     email="user@admin.nl",  # Store in lowercase for consistency
                     name="Admin User",
