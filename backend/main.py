@@ -838,28 +838,141 @@ except Exception as e:
 
 # Auto-setup required users if they don't exist (for production deployment)
 # This ensures the 4 required users are always available
+def auto_setup_users():
+    """Automatically set up required users if they don't exist"""
+    try:
+        db = SessionLocal()
+        required_emails = [
+            "admin@demo.local",
+            "user@company.nl",
+            "user@recruiter.nl",
+            "user@kandidaat.nl"
+        ]
+        existing_users = db.query(UserDB).filter(UserDB.email.in_(required_emails)).all()
+        existing_emails = {u.email for u in existing_users}
+        missing_emails = set(required_emails) - existing_emails
+        
+        if missing_emails:
+            print(f"\n{'='*60}")
+            print("⚠ MISSING REQUIRED USERS - AUTO-SETUP STARTING")
+            print(f"{'='*60}")
+            print(f"Missing: {missing_emails}")
+            print("Auto-creating required users...")
+            
+            # Get or create main company
+            main_company = db.query(CompanyDB).filter(CompanyDB.slug == "demo-environment").first()
+            if not main_company:
+                main_company = CompanyDB(
+                    name="Demo Environment",
+                    slug="demo-environment",
+                    primary_domain="demo.local",
+                    status="active",
+                    plan="trial"
+                )
+                db.add(main_company)
+                db.commit()
+                db.refresh(main_company)
+                print(f"✓ Created company: {main_company.name} (ID: {main_company.id})")
+            else:
+                print(f"✓ Using existing company: {main_company.name} (ID: {main_company.id})")
+            
+            # Create admin user
+            if "admin@demo.local" in missing_emails:
+                admin_user = UserDB(
+                    email="admin@demo.local",
+                    name="Admin User",
+                    role="admin",
+                    company_id=main_company.id,
+                    password_hash=get_password_hash("admin123"),
+                    is_active=True
+                )
+                db.add(admin_user)
+                print("✓ Created admin user: admin@demo.local / admin123")
+            
+            # Create company user
+            if "user@company.nl" in missing_emails:
+                company_user = UserDB(
+                    email="user@company.nl",
+                    name="Company User",
+                    role="company_admin",
+                    company_id=main_company.id,
+                    password_hash=get_password_hash("company123"),
+                    is_active=True
+                )
+                db.add(company_user)
+                print("✓ Created company user: user@company.nl / company123")
+            
+            # Get or create recruiter company
+            recruiter_company = db.query(CompanyDB).filter(CompanyDB.slug == "recruiter-company").first()
+            if not recruiter_company:
+                recruiter_company = CompanyDB(
+                    name="Recruiter Company",
+                    slug="recruiter-company",
+                    primary_domain="recruiter.local",
+                    status="active",
+                    plan="trial"
+                )
+                db.add(recruiter_company)
+                db.commit()
+                db.refresh(recruiter_company)
+                print(f"✓ Created recruiter company: {recruiter_company.name} (ID: {recruiter_company.id})")
+            else:
+                print(f"✓ Using existing recruiter company: {recruiter_company.name} (ID: {recruiter_company.id})")
+            
+            # Create recruiter user
+            if "user@recruiter.nl" in missing_emails:
+                recruiter_user = UserDB(
+                    email="user@recruiter.nl",
+                    name="Recruiter User",
+                    role="recruiter",
+                    company_id=recruiter_company.id,
+                    password_hash=get_password_hash("recruiter123"),
+                    is_active=True
+                )
+                db.add(recruiter_user)
+                print("✓ Created recruiter user: user@recruiter.nl / recruiter123")
+            
+            # Create candidate user
+            if "user@kandidaat.nl" in missing_emails:
+                candidate_user = UserDB(
+                    email="user@kandidaat.nl",
+                    name="Candidate User",
+                    role="candidate",
+                    company_id=None,
+                    password_hash=get_password_hash("kandidaat123"),
+                    is_active=True
+                )
+                db.add(candidate_user)
+                print("✓ Created candidate user: user@kandidaat.nl / kandidaat123")
+            
+            db.commit()
+            print(f"\n{'='*60}")
+            print("✓ ALL REQUIRED USERS CREATED SUCCESSFULLY!")
+            print(f"{'='*60}")
+            print("\nLogin credentials:")
+            print("  Admin:      admin@demo.local / admin123")
+            print("  Company:    user@company.nl / company123")
+            print("  Recruiter:  user@recruiter.nl / recruiter123")
+            print("  Candidate:  user@kandidaat.nl / kandidaat123")
+            print(f"{'='*60}\n")
+        else:
+            print("✓ All required users exist")
+        
+        db.close()
+    except Exception as e:
+        print(f"\n{'='*60}")
+        print(f"⚠ WARNING: Could not auto-setup users: {e}")
+        print(f"{'='*60}")
+        import traceback
+        traceback.print_exc()
+        # Don't fail startup if setup fails
+
+# Run auto-setup on startup (after password hashing is available)
 try:
-    db = SessionLocal()
-    required_emails = [
-        "admin@demo.local",
-        "user@company.nl",
-        "user@recruiter.nl",
-        "user@kandidaat.nl"
-    ]
-    existing_users = db.query(UserDB).filter(UserDB.email.in_(required_emails)).all()
-    existing_emails = {u.email for u in existing_users}
-    missing_emails = set(required_emails) - existing_emails
-    
-    if missing_emails:
-        print(f"Missing required users: {missing_emails}")
-        print("Run 'python3 setup_users.py' in the backend directory to create them.")
-        print("Or they will be created automatically on first API call if setup_users.py is available.")
-    else:
-        print("✓ All required users exist")
-    db.close()
+    auto_setup_users()
 except Exception as e:
-    print(f"Warning: Could not check for required users: {e}")
-    # Don't fail startup if check fails
+    print(f"⚠ Could not run auto-setup on startup: {e}")
+    # Don't fail startup if auto-setup fails
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     """Create a JWT access token"""
