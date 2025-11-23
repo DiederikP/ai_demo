@@ -22,10 +22,6 @@ export default function RecruiterVacancies() {
   const [isLoading, setIsLoading] = useState(true);
   const router = useRouter();
 
-  useEffect(() => {
-    loadVacancies();
-  }, []);
-
   const loadVacancies = async () => {
     try {
       const headers = getAuthHeaders();
