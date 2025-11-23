@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import ReasoningPanel from './ReasoningPanel';
 import WorkflowVisualizationPopup from './WorkflowVisualizationPopup';
 import { useCompany } from '../contexts/CompanyContext';
+import { getAuthHeaders } from '../lib/auth';
 
 interface JobDescription {
   id: string;
@@ -187,11 +188,15 @@ export default function CompanyDashboard() {
     try {
       // Add company_id to all API calls for multi-portal filtering
       const companyParam = selectedCompany?.id ? `?company_id=${selectedCompany.id}` : '';
+      
+      // Get auth headers for authenticated requests
+      const headers = getAuthHeaders();
+      
       const [jobsRes, personasRes, candidatesRes, templatesRes] = await Promise.all([
-        fetch(`/api/job-descriptions${companyParam}`),
-        fetch(`/api/personas${companyParam}`),
-        fetch(`/api/candidates${companyParam}`),
-        fetch('/api/evaluation-templates')
+        fetch(`/api/job-descriptions${companyParam}`, { headers }),
+        fetch(`/api/personas${companyParam}`, { headers }),
+        fetch(`/api/candidates${companyParam}`, { headers }),
+        fetch('/api/evaluation-templates', { headers })
       ]);
 
       if (jobsRes.ok) {
