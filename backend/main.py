@@ -1425,15 +1425,31 @@ async def login(login_data: LoginRequest):
     """Authenticate user and return JWT token"""
     db = SessionLocal()
     try:
+        print(f"\n{'='*60}")
+        print(f"LOGIN ATTEMPT")
+        print(f"{'='*60}")
+        print(f"Email: {login_data.email}")
+        print(f"Email (lowercase): {login_data.email.lower()}")
+        
         user = db.query(UserDB).filter(UserDB.email == login_data.email.lower()).first()
         
         if not user:
+            print(f"❌ User not found: {login_data.email.lower()}")
+            print(f"Available users in database:")
+            all_users = db.query(UserDB).all()
+            for u in all_users:
+                print(f"  - {u.email} (role: {u.role}, active: {u.is_active})")
+            print(f"{'='*60}\n")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid email or password"
             )
         
+        print(f"✓ User found: {user.email} (role: {user.role}, active: {user.is_active})")
+        
         if not user.is_active:
+            print(f"❌ User account is inactive")
+            print(f"{'='*60}\n")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="User account is inactive"
@@ -1441,29 +1457,43 @@ async def login(login_data: LoginRequest):
         
         # Check if user has a password hash (new users might not have one yet)
         if not user.password_hash:
+            print(f"⚠️ User has no password hash")
             # For backward compatibility, allow login without password if no hash exists
             # In production, this should require password reset
             if login_data.password == "demo":  # Temporary demo password
                 # Generate hash for future use
                 user.password_hash = get_password_hash(login_data.password)
                 db.commit()
+                print(f"✓ Generated password hash for user")
             else:
+                print(f"❌ Password mismatch (no hash, expected 'demo')")
+                print(f"{'='*60}\n")
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Invalid email or password"
                 )
         else:
             # Verify password
+            print(f"Verifying password...")
             try:
-                if not verify_password(login_data.password, user.password_hash):
+                password_valid = verify_password(login_data.password, user.password_hash)
+                print(f"Password valid: {password_valid}")
+                
+                if not password_valid:
+                    print(f"❌ Password verification failed")
+                    print(f"{'='*60}\n")
                     raise HTTPException(
                         status_code=status.HTTP_401_UNAUTHORIZED,
                         detail="Invalid email or password"
                     )
+                print(f"✓ Password verified successfully")
+            except HTTPException:
+                raise
             except Exception as verify_error:
-                print(f"Error verifying password for {login_data.email}: {str(verify_error)}")
+                print(f"❌ Error verifying password: {str(verify_error)}")
                 import traceback
                 traceback.print_exc()
+                print(f"{'='*60}\n")
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail=f"Error verifying password: {str(verify_error)}"
@@ -1476,6 +1506,10 @@ async def login(login_data: LoginRequest):
             expires_delta=access_token_expires
         )
         
+        print(f"✓ Login successful for {user.email}")
+        print(f"✓ Token created (expires in {ACCESS_TOKEN_EXPIRE_MINUTES} minutes)")
+        print(f"{'='*60}\n")
+        
         return TokenResponse(
             access_token=access_token,
             token_type="bearer",
@@ -1486,6 +1520,17 @@ async def login(login_data: LoginRequest):
                 "role": user.role,
                 "company_id": user.company_id
             }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Unexpected error during login: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        print(f"{'='*60}\n")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Login error: {str(e)}"
         )
     finally:
         db.close()
