@@ -87,8 +87,12 @@ export default function CompanyLogin() {
         }
       }).then(res => res.json()).catch(() => null);
       
-      const role = updatedUser?.role?.toLowerCase() || user?.role?.toLowerCase();
+      const role = updatedUser?.role?.toLowerCase();
       console.log('[Company Login Page] User role:', role);
+      
+      if (!role) {
+        throw new Error('Kon gebruikersrol niet bepalen. Probeer opnieuw in te loggen.');
+      }
       
       // Redirect based on role
       if (role === 'recruiter') {
