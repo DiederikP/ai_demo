@@ -74,20 +74,11 @@ export default function CompanyLogin() {
 
     try {
       console.log('[Login Page] Attempting login...');
-      await login(email, password);
+      const loginResponse = await login(email, password);
       console.log('[Login Page] Login successful, redirecting...');
       
-      // Wait a moment for auth context to update
-      await new Promise(resolve => setTimeout(resolve, 100));
-      
-      // Refresh user from context after login
-      const updatedUser = await fetch('/api/auth/me', {
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('auth_token')}`
-        }
-      }).then(res => res.json()).catch(() => null);
-      
-      const role = updatedUser?.role?.toLowerCase();
+      // Get role from login response (user is already available in the response)
+      const role = loginResponse?.user?.role?.toLowerCase();
       console.log('[Company Login Page] User role:', role);
       
       if (!role) {
