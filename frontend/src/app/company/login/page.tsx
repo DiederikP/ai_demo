@@ -72,25 +72,52 @@ export default function CompanyLogin() {
     } catch (err: any) {
       console.error('[Login Page] Login error:', err);
       console.error('[Login Page] Error details:', {
-        message: err.message,
-        stack: err.stack,
-        name: err.name,
-        toString: err.toString()
+        message: err?.message,
+        error: err?.error,
+        detail: err?.detail,
+        stack: err?.stack,
+        name: err?.name,
+        toString: err?.toString(),
+        fullError: err
       });
       
       // Extract error message from various possible formats
       let errorMessage = 'Inloggen mislukt. Controleer uw email en wachtwoord.';
       
-      if (err.message) {
+      // Try multiple ways to extract the error message
+      if (err?.message && typeof err.message === 'string' && err.message !== '[object Object]') {
         errorMessage = err.message;
-      } else if (err.error) {
+      } else if (err?.error && typeof err.error === 'string' && err.error !== '[object Object]') {
         errorMessage = err.error;
-      } else if (err.detail) {
+      } else if (err?.detail && typeof err.detail === 'string' && err.detail !== '[object Object]') {
         errorMessage = err.detail;
-      } else if (typeof err === 'string') {
+      } else if (typeof err === 'string' && err !== '[object Object]') {
         errorMessage = err;
-      } else if (err.toString && err.toString() !== '[object Object]') {
-        errorMessage = err.toString();
+      } else {
+        // Try to stringify the error if it's an object
+        try {
+          const errorStr = JSON.stringify(err);
+          if (errorStr && errorStr !== '{}' && errorStr !== '[object Object]') {
+            const parsed = JSON.parse(errorStr);
+            if (parsed.error) errorMessage = parsed.error;
+            else if (parsed.detail) errorMessage = parsed.detail;
+            else if (parsed.message) errorMessage = parsed.message;
+            else errorMessage = errorStr;
+          }
+        } catch (e) {
+          // If stringify fails, try toString but check it's not [object Object]
+          if (err?.toString && typeof err.toString === 'function') {
+            const str = err.toString();
+            if (str && str !== '[object Object]' && str !== 'Error') {
+              errorMessage = str;
+            }
+          }
+        }
+      }
+      
+      // Ensure we always have a valid string
+      if (!errorMessage || errorMessage === '[object Object]' || errorMessage === '{}') {
+        errorMessage = 'Inloggen mislukt. Controleer uw email en wachtwoord.';
       }
       
       setError(errorMessage);

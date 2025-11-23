@@ -161,18 +161,42 @@ export async function login(email: string, password: string): Promise<AuthRespon
     console.error(`[Auth] Error stack:`, error?.stack);
     
     // Extract meaningful error message
-    let errorMessage = 'Login failed';
+    let errorMessage = 'Login failed. Please check your email and password.';
     
-    if (error?.message) {
+    // Try multiple ways to extract the error message
+    if (error?.message && typeof error.message === 'string' && error.message !== '[object Object]') {
       errorMessage = error.message;
-    } else if (error?.error) {
+    } else if (error?.error && typeof error.error === 'string' && error.error !== '[object Object]') {
       errorMessage = error.error;
-    } else if (error?.detail) {
+    } else if (error?.detail && typeof error.detail === 'string' && error.detail !== '[object Object]') {
       errorMessage = error.detail;
-    } else if (typeof error === 'string') {
+    } else if (typeof error === 'string' && error !== '[object Object]') {
       errorMessage = error;
-    } else if (error?.toString && error.toString() !== '[object Object]') {
-      errorMessage = error.toString();
+    } else {
+      // Try to stringify the error if it's an object
+      try {
+        const errorStr = JSON.stringify(error);
+        if (errorStr && errorStr !== '{}' && errorStr !== '[object Object]') {
+          const parsed = JSON.parse(errorStr);
+          if (parsed.error) errorMessage = parsed.error;
+          else if (parsed.detail) errorMessage = parsed.detail;
+          else if (parsed.message) errorMessage = parsed.message;
+          else if (errorStr.length < 200) errorMessage = errorStr;
+        }
+      } catch (e) {
+        // If stringify fails, try toString but check it's not [object Object]
+        if (error?.toString && typeof error.toString === 'function') {
+          const str = error.toString();
+          if (str && str !== '[object Object]' && str !== 'Error') {
+            errorMessage = str;
+          }
+        }
+      }
+    }
+    
+    // Ensure we always have a valid string
+    if (!errorMessage || errorMessage === '[object Object]' || errorMessage === '{}') {
+      errorMessage = 'Login failed. Please check your email and password.';
     }
     
     // Create a new error with the extracted message
