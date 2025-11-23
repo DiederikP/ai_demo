@@ -11,7 +11,7 @@ import CompanyKandidaten from '../../../components/CompanyKandidaten';
 import CompanyResults from '../../../components/CompanyResults';
 import CompanyNotifications from '../../../components/CompanyNotifications';
 
-type Module = 'dashboard' | 'vacatures' | 'personas' | 'kandidaten' | 'resultaten' | 'notifications';
+type Module = 'dashboard' | 'vacatures' | 'personas' | 'kandidaten' | 'resultaten' | 'notifications' | 'overview';
 
 function CompanyDashboardContent() {
   const searchParams = useSearchParams();
@@ -19,7 +19,7 @@ function CompanyDashboardContent() {
 
   useEffect(() => {
     const module = searchParams.get('module');
-    if (module && ['dashboard', 'vacatures', 'personas', 'kandidaten', 'resultaten', 'notifications'].includes(module)) {
+    if (module && ['dashboard', 'vacatures', 'personas', 'kandidaten', 'resultaten', 'notifications', 'overview'].includes(module)) {
       setActiveModule(module as Module);
     }
     // If refresh parameter is present, trigger refresh

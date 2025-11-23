@@ -9,8 +9,8 @@ import { usePermissions } from '../hooks/usePermissions';
 import { getAuthHeaders } from '../lib/auth';
 
 interface CompanyNavigationProps {
-  activeModule: 'dashboard' | 'vacatures' | 'personas' | 'kandidaten' | 'resultaten';
-  onModuleChange: (module: 'dashboard' | 'vacatures' | 'personas' | 'kandidaten' | 'resultaten') => void;
+  activeModule: 'dashboard' | 'vacatures' | 'personas' | 'kandidaten' | 'resultaten' | 'notifications' | 'overview';
+  onModuleChange: (module: 'dashboard' | 'vacatures' | 'personas' | 'kandidaten' | 'resultaten' | 'notifications' | 'overview') => void;
   onCollapsedChange?: (isCollapsed: boolean) => void;
 }
 

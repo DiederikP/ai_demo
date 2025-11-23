@@ -15,6 +15,9 @@ interface JobDescription {
   requirements: string;
   location: string;
   salary_range: string;
+  created_at?: string;
+  is_active?: boolean;
+  assigned_agency_id?: string | null;
 }
 
 interface Persona {
@@ -800,7 +803,7 @@ export default function CompanyDashboard() {
                     <div className="font-medium text-barnes-dark-violet">{job.title}</div>
                     <div className="text-sm text-barnes-dark-gray">{job.company}</div>
                     <div className="text-xs text-gray-500 mt-1">
-                      Aangemaakt: {new Date(job.created_at).toLocaleDateString('nl-NL')}
+                      Aangemaakt: {job.created_at ? new Date(job.created_at).toLocaleDateString('nl-NL') : 'Onbekend'}
                     </div>
                   </div>
                   <button

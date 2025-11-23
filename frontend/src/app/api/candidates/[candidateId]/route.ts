@@ -4,10 +4,10 @@ const BACKEND_URL = process.env.BACKEND_URL || process.env.NEXT_PUBLIC_BACKEND_U
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { candidateId: string } }
+  { params }: { params: Promise<{ candidateId: string }> }
 ) {
   try {
-    const candidateId = params.candidateId;
+    const { candidateId } = await params;
     
     // Get authorization header from the incoming request
     const authHeader = request.headers.get('authorization') || request.headers.get('Authorization');
@@ -62,10 +62,10 @@ export async function GET(
 
 export async function PUT(
   request: NextRequest,
-  { params }: { params: { candidateId: string } }
+  { params }: { params: Promise<{ candidateId: string }> }
 ) {
   try {
-    const candidateId = params.candidateId;
+    const { candidateId } = await params;
     const body = await request.json();
     
     // Get authorization header from the incoming request
@@ -107,10 +107,10 @@ export async function PUT(
 
 export async function DELETE(
   request: NextRequest,
-  { params }: { params: { candidateId: string } }
+  { params }: { params: Promise<{ candidateId: string }> }
 ) {
   try {
-    const candidateId = params.candidateId;
+    const { candidateId } = await params;
     
     // Get authorization header from the incoming request
     const authHeader = request.headers.get('authorization') || request.headers.get('Authorization');

@@ -19,8 +19,9 @@ export async function POST(request: NextRequest) {
     if (body.conversation_id) formData.append('conversation_id', body.conversation_id);
     
     // Remove Content-Type when using FormData - browser will set it with boundary
-    const { 'Content-Type': _, ...headersWithoutContentType } = headers as Record<string, string>;
-    const authHeader = headers['Authorization'] || headers['authorization'];
+    const headersRecord = headers as Record<string, string>;
+    const { 'Content-Type': _, ...headersWithoutContentType } = headersRecord;
+    const authHeader = headersRecord['Authorization'] || headersRecord['authorization'];
     const formDataHeaders: HeadersInit = {};
     if (authHeader) {
       formDataHeaders['Authorization'] = authHeader as string;
