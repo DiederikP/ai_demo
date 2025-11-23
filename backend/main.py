@@ -2058,11 +2058,23 @@ async def get_job_descriptions(
             query = query.filter(JobPostingDB.assigned_agency_id == current_user.id)
         
         # Filter by company_id if provided (multi-portal isolation)
+        # Include jobs with NULL company_id for backward compatibility with old data
         if company_id:
-            query = query.filter(JobPostingDB.company_id == company_id)
+            query = query.filter(
+                or_(
+                    JobPostingDB.company_id == company_id,
+                    JobPostingDB.company_id.is_(None)  # Include old jobs without company_id
+                )
+            )
         elif current_user and current_user.company_id:
             # If user is authenticated and has company_id, filter by user's company
-            query = query.filter(JobPostingDB.company_id == current_user.company_id)
+            # Include jobs with NULL company_id for backward compatibility
+            query = query.filter(
+                or_(
+                    JobPostingDB.company_id == current_user.company_id,
+                    JobPostingDB.company_id.is_(None)  # Include old jobs without company_id
+                )
+            )
         
         jobs = query.all()
         db.close()
