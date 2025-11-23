@@ -6,7 +6,7 @@ This guide explains how to set up the required users on your Render deployment.
 
 The following users need to be created with their respective roles:
 
-- **Admin**: `admin@demo.local` / `admin123` (full access to all portals)
+- **Admin**: `User@admin.nl` / `admin123` (full access to all portals)
 - **Company**: `user@company.nl` / `company123` (Company portal only)
 - **Recruiter**: `user@recruiter.nl` / `recruiter123` (Recruiter portal only)
 - **Candidate**: `user@kandidaat.nl` / `kandidaat123` (Candidate portal only)

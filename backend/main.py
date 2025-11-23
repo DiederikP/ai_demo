@@ -872,7 +872,7 @@ def auto_setup_users():
     try:
         db = SessionLocal()
         required_emails = [
-            "admin@demo.local",
+            "User@admin.nl",
             "user@company.nl",
             "user@recruiter.nl",
             "user@kandidaat.nl"
@@ -906,9 +906,9 @@ def auto_setup_users():
                 print(f"✓ Using existing company: {main_company.name} (ID: {main_company.id})")
             
             # Create admin user
-            if "admin@demo.local" in missing_emails:
+            if "User@admin.nl" in missing_emails:
                 admin_user = UserDB(
-                    email="admin@demo.local",
+                    email="User@admin.nl",
                     name="Admin User",
                     role="admin",
                     company_id=main_company.id,
@@ -916,7 +916,7 @@ def auto_setup_users():
                     is_active=True
                 )
                 db.add(admin_user)
-                print("✓ Created admin user: admin@demo.local / admin123")
+                print("✓ Created admin user: User@admin.nl / admin123")
             
             # Create company user
             if "user@company.nl" in missing_emails:
@@ -979,7 +979,7 @@ def auto_setup_users():
             print("✓ ALL REQUIRED USERS CREATED SUCCESSFULLY!")
             print(f"{'='*60}")
             print("\nLogin credentials:")
-            print("  Admin:      admin@demo.local / admin123")
+            print("  Admin:      User@admin.nl / admin123")
             print("  Company:    user@company.nl / company123")
             print("  Recruiter:  user@recruiter.nl / recruiter123")
             print("  Candidate:  user@kandidaat.nl / kandidaat123")
@@ -7665,13 +7665,13 @@ async def reset_database(
         print(f"User: {current_user.email} ({current_user.role})")
         print(f"{'='*60}")
         
-        # Keep these user emails (will be recreated by auto-setup)
-        keep_emails = [
-            "admin@demo.local",
-            "user@company.nl",
-            "user@recruiter.nl",
-            "user@kandidaat.nl"
-        ]
+                # Keep these user emails (will be recreated by auto-setup)
+                keep_emails = [
+                    "User@admin.nl",
+                    "user@company.nl",
+                    "user@recruiter.nl",
+                    "user@kandidaat.nl"
+                ]
         
         # Get IDs of users to keep
         users_to_keep = db.query(UserDB).filter(UserDB.email.in_(keep_emails)).all()

@@ -4,7 +4,7 @@
 
 1. **Login as Admin**:
    - Go to: `https://ai-demo-frontend.onrender.com/company/login`
-   - Email: `admin@demo.local`
+   - Email: `User@admin.nl`
    - Password: `admin123`
 
 2. **Navigate to Reset Page**:
@@ -34,7 +34,7 @@
 ## After Reset
 
 The following users will be automatically recreated:
-- **Admin**: `admin@demo.local` / `admin123`
+- **Admin**: `User@admin.nl` / `admin123`
 - **Company**: `user@company.nl` / `company123`
 - **Recruiter**: `user@recruiter.nl` / `recruiter123`
 - **Candidate**: `user@kandidaat.nl` / `kandidaat123`
@@ -47,7 +47,7 @@ If you prefer using curl or Postman:
 # 1. Login to get token
 TOKEN=$(curl -X POST https://ai-hiring-backend.onrender.com/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"email":"admin@demo.local","password":"admin123"}' \
+  -d '{"email":"User@admin.nl","password":"admin123"}' \
   | jq -r '.access_token')
 
 # 2. Reset database
