@@ -215,6 +215,14 @@ export default function CompanyNavigation({ activeModule, onModuleChange, onColl
         { id: 'notifications' as const, label: 'Notificaties', icon: '🔔' },
       ];
 
+      // Add admin modules if user is admin
+      const adminModules = isAdmin ? [
+        { id: 'admin-manage' as const, label: 'Admin: Records', icon: '🗑️', href: '/admin/manage', isLink: true },
+        { id: 'admin-reset' as const, label: 'Admin: Reset', icon: '🔄', href: '/admin/reset', isLink: true },
+      ] : [];
+      
+      const allModules = [...modules, ...adminModules];
+
       // Add admin module if user is admin
       const allModules = isAdmin ? [
         ...modules,
