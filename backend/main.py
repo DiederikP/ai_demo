@@ -872,7 +872,7 @@ def auto_setup_users():
     try:
         db = SessionLocal()
         required_emails = [
-            "User@admin.nl",
+            "user@admin.nl",  # Store in lowercase for consistency
             "user@company.nl",
             "user@recruiter.nl",
             "user@kandidaat.nl"
@@ -908,7 +908,7 @@ def auto_setup_users():
             # Create admin user
             if "User@admin.nl" in missing_emails:
                 admin_user = UserDB(
-                    email="User@admin.nl",
+                    email="user@admin.nl",  # Store in lowercase for consistency
                     name="Admin User",
                     role="admin",
                     company_id=main_company.id,
@@ -916,7 +916,7 @@ def auto_setup_users():
                     is_active=True
                 )
                 db.add(admin_user)
-                print("✓ Created admin user: User@admin.nl / admin123")
+                print("✓ Created admin user: user@admin.nl / admin123")
             
             # Create company user
             if "user@company.nl" in missing_emails:
@@ -979,7 +979,7 @@ def auto_setup_users():
             print("✓ ALL REQUIRED USERS CREATED SUCCESSFULLY!")
             print(f"{'='*60}")
             print("\nLogin credentials:")
-            print("  Admin:      User@admin.nl / admin123")
+            print("  Admin:      user@admin.nl / admin123")
             print("  Company:    user@company.nl / company123")
             print("  Recruiter:  user@recruiter.nl / recruiter123")
             print("  Candidate:  user@kandidaat.nl / kandidaat123")
@@ -7667,7 +7667,7 @@ async def reset_database(
         
                 # Keep these user emails (will be recreated by auto-setup)
                 keep_emails = [
-                    "User@admin.nl",
+                    "user@admin.nl",  # Case-insensitive matching
                     "user@company.nl",
                     "user@recruiter.nl",
                     "user@kandidaat.nl"

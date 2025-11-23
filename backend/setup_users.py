@@ -28,9 +28,9 @@ def clear_all_data():
     print("Clearing all old data (except specified users)...")
     db = SessionLocal()
     try:
-        # Keep these user emails
+        # Keep these user emails (case-insensitive matching)
         keep_emails = [
-            "User@admin.nl",
+            "user@admin.nl",  # Store in lowercase for consistency
             "user@company.nl",
             "user@recruiter.nl",
             "user@kandidaat.nl"
@@ -108,11 +108,11 @@ def setup_users():
             admin_user.company_id = company.id
             admin_user.password_hash = get_password_hash("admin123")
             admin_user.is_active = True
-            admin_user.email = "User@admin.nl"  # Ensure correct casing
-            print("✓ Updated admin user: User@admin.nl (password: admin123)")
+            admin_user.email = "user@admin.nl"  # Store in lowercase for consistency
+            print("✓ Updated admin user: user@admin.nl (password: admin123)")
         else:
             admin_user = UserDB(
-                email="User@admin.nl",
+                email="user@admin.nl",  # Store in lowercase for consistency
                 name="Admin User",
                 role="admin",
                 company_id=company.id,  # In same environment
@@ -120,7 +120,7 @@ def setup_users():
                 is_active=True
             )
             db.add(admin_user)
-            print("✓ Created admin user: User@admin.nl (password: admin123)")
+            print("✓ Created admin user: user@admin.nl (password: admin123)")
         
         # 2. Company user - only Bedrijf portal
         company_user = db.query(UserDB).filter(UserDB.email == "user@company.nl").first()
@@ -208,7 +208,7 @@ def setup_users():
         db.commit()
         print("\n✓ All users created successfully!")
         print("\nLogin credentials:")
-        print("  Admin:      User@admin.nl / admin123")
+        print("  Admin:      user@admin.nl / admin123")
         print("  Company:    user@company.nl / company123")
         print("  Recruiter:  user@recruiter.nl / recruiter123")
         print("  Candidate:  user@kandidaat.nl / kandidaat123")
