@@ -1,6 +1,9 @@
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Query, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from fastapi import Request as FastAPIRequest
 from pydantic import BaseModel, EmailStr
 from typing import List, Optional, Dict
 from uuid import uuid4
@@ -115,6 +118,32 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Add validation error handler to see what's wrong
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: FastAPIRequest, exc: RequestValidationError):
+    """Handle validation errors with detailed logging"""
+    print(f"\n{'='*60}")
+    print(f"VALIDATION ERROR")
+    print(f"{'='*60}")
+    print(f"URL: {request.url}")
+    print(f"Method: {request.method}")
+    print(f"Headers: {dict(request.headers)}")
+    try:
+        body = await request.body()
+        print(f"Request body: {body.decode('utf-8') if body else 'Empty'}")
+    except Exception as e:
+        print(f"Could not read request body: {e}")
+    print(f"Validation errors: {exc.errors()}")
+    print(f"{'='*60}\n")
+    
+    return JSONResponse(
+        status_code=422,
+        content={
+            "detail": exc.errors(),
+            "body": exc.body.decode('utf-8') if exc.body else None
+        }
+    )
 
 # -----------------------------
 # File extraction functions
@@ -1440,6 +1469,7 @@ async def login(login_data: LoginRequest):
         print(f"{'='*60}")
         print(f"Email: {login_data.email}")
         print(f"Email (lowercase): {login_data.email.lower()}")
+        print(f"Password provided: {'Yes' if login_data.password else 'No'} (length: {len(login_data.password) if login_data.password else 0})")
         
         # Ensure required users exist before checking
         try:

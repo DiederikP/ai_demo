@@ -22,17 +22,23 @@ export async function POST(request: NextRequest) {
     console.log(`[API /auth/login] Backend URL: ${BACKEND_URL}`);
     console.log(`[API /auth/login] Attempting login...`);
 
+    const requestBody = { 
+      email: normalizedEmail, 
+      password 
+    };
+    
+    console.log(`[API /auth/login] Request body:`, JSON.stringify(requestBody, null, 2));
+    console.log(`[API /auth/login] Email type: ${typeof normalizedEmail}, Password type: ${typeof password}`);
+    
     let response;
     try {
       response = await fetch(`${BACKEND_URL}/auth/login`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
         },
-        body: JSON.stringify({ 
-          email: normalizedEmail, 
-          password 
-        })
+        body: JSON.stringify(requestBody)
       });
 
       console.log(`[API /auth/login] Response status: ${response.status} ${response.statusText}`);
