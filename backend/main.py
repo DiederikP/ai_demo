@@ -836,6 +836,31 @@ except Exception as e:
     import traceback
     traceback.print_exc()
 
+# Auto-setup required users if they don't exist (for production deployment)
+# This ensures the 4 required users are always available
+try:
+    db = SessionLocal()
+    required_emails = [
+        "admin@demo.local",
+        "user@company.nl",
+        "user@recruiter.nl",
+        "user@kandidaat.nl"
+    ]
+    existing_users = db.query(UserDB).filter(UserDB.email.in_(required_emails)).all()
+    existing_emails = {u.email for u in existing_users}
+    missing_emails = set(required_emails) - existing_emails
+    
+    if missing_emails:
+        print(f"Missing required users: {missing_emails}")
+        print("Run 'python3 setup_users.py' in the backend directory to create them.")
+        print("Or they will be created automatically on first API call if setup_users.py is available.")
+    else:
+        print("✓ All required users exist")
+    db.close()
+except Exception as e:
+    print(f"Warning: Could not check for required users: {e}")
+    # Don't fail startup if check fails
+
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     """Create a JWT access token"""
     to_encode = data.copy()
