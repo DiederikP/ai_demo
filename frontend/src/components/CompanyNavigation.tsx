@@ -34,7 +34,8 @@ interface UserSummary {
 export default function CompanyNavigation({ activeModule, onModuleChange, onCollapsedChange }: CompanyNavigationProps) {
   const [isCollapsed, setIsCollapsed] = useState(false);
   const { user, logout: logoutAuth, isLoading: authLoading } = useAuth();
-  const { isAdmin } = usePermissions();
+  const { isAdmin: isAdminCheck } = usePermissions();
+  const isAdmin = isAdminCheck();
   const router = useRouter();
   
   useEffect(() => {
