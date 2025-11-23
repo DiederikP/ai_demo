@@ -7541,6 +7541,145 @@ async def match_candidates_to_job(job_id: str = Form(...), limit: Optional[int] 
 # -----------------------------
 
 # -----------------------------
+# Admin Endpoints
+# -----------------------------
+
+@app.post("/admin/reset-database")
+async def reset_database(
+    current_user: UserDB = Depends(require_role(["admin"])),
+    confirm: bool = Query(False, description="Must be True to confirm database reset")
+):
+    """Reset the entire database - ADMIN ONLY
+    
+    WARNING: This will delete ALL data including:
+    - All users (except the 4 required users if they exist)
+    - All candidates
+    - All job postings
+    - All evaluations and debates
+    - All notifications
+    - All companies (except those needed for required users)
+    
+    After reset, the auto-setup will recreate the 4 required users.
+    """
+    if not confirm:
+        raise HTTPException(
+            status_code=400,
+            detail="Must set confirm=true to reset database. This action cannot be undone."
+        )
+    
+    db = SessionLocal()
+    try:
+        print(f"\n{'='*60}")
+        print("⚠ DATABASE RESET INITIATED BY ADMIN")
+        print(f"User: {current_user.email} ({current_user.role})")
+        print(f"{'='*60}")
+        
+        # Keep these user emails (will be recreated by auto-setup)
+        keep_emails = [
+            "admin@demo.local",
+            "user@company.nl",
+            "user@recruiter.nl",
+            "user@kandidaat.nl"
+        ]
+        
+        # Get IDs of users to keep
+        users_to_keep = db.query(UserDB).filter(UserDB.email.in_(keep_emails)).all()
+        user_ids_to_keep = [u.id for u in users_to_keep]
+        
+        print(f"Keeping {len(user_ids_to_keep)} users: {keep_emails}")
+        
+        # Delete in order to respect foreign key constraints
+        print("Deleting approvals...")
+        if user_ids_to_keep:
+            db.query(ApprovalDB).filter(~ApprovalDB.user_id.in_(user_ids_to_keep)).delete(synchronize_session=False)
+        else:
+            db.query(ApprovalDB).delete()
+        
+        print("Deleting candidate watchers...")
+        db.query(CandidateWatcherDB).delete()
+        
+        print("Deleting job watchers...")
+        db.query(JobWatcherDB).delete()
+        
+        print("Deleting candidate conversations...")
+        db.query(CandidateConversationDB).delete()
+        
+        print("Deleting scheduled appointments...")
+        db.query(ScheduledAppointmentDB).delete()
+        
+        print("Deleting comments...")
+        db.query(CommentDB).delete()
+        
+        print("Deleting notifications...")
+        db.query(NotificationDB).delete()
+        
+        print("Deleting evaluation results...")
+        db.query(EvaluationResultDB).delete()
+        
+        print("Deleting evaluations...")
+        db.query(EvaluationDB).delete()
+        
+        print("Deleting candidates...")
+        db.query(CandidateDB).delete()
+        
+        print("Deleting job postings...")
+        db.query(JobPostingDB).delete()
+        
+        # Delete users except the ones we want to keep
+        print("Deleting users...")
+        if user_ids_to_keep:
+            db.query(UserDB).filter(~UserDB.id.in_(user_ids_to_keep)).delete(synchronize_session=False)
+            print(f"✓ Deleted all users except {len(user_ids_to_keep)} specified users")
+        else:
+            db.query(UserDB).delete()
+            print("✓ Deleted all users (none to keep)")
+        
+        # Delete companies that aren't needed (we'll recreate them)
+        print("Deleting companies...")
+        # Keep companies that are referenced by users we're keeping
+        company_ids_to_keep = set()
+        for user in users_to_keep:
+            if user.company_id:
+                company_ids_to_keep.add(user.company_id)
+        
+        if company_ids_to_keep:
+            db.query(CompanyDB).filter(~CompanyDB.id.in_(company_ids_to_keep)).delete(synchronize_session=False)
+        else:
+            db.query(CompanyDB).delete()
+        
+        db.commit()
+        
+        print(f"{'='*60}")
+        print("✓ DATABASE RESET COMPLETE")
+        print(f"{'='*60}\n")
+        
+        # Trigger auto-setup to recreate required users
+        print("Running auto-setup to recreate required users...")
+        auto_setup_users()
+        
+        db.close()
+        
+        return {
+            "success": True,
+            "message": "Database reset successfully. Required users have been recreated.",
+            "deleted": {
+                "candidates": "all",
+                "job_postings": "all",
+                "evaluations": "all",
+                "users": f"all except {len(user_ids_to_keep)} required users"
+            }
+        }
+        
+    except Exception as e:
+        db.rollback()
+        print(f"Error resetting database: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to reset database: {str(e)}")
+    finally:
+        db.close()
+
+# -----------------------------
 # LLM Judge System Endpoints
 # -----------------------------
 
