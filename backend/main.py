@@ -7665,13 +7665,13 @@ async def reset_database(
         print(f"User: {current_user.email} ({current_user.role})")
         print(f"{'='*60}")
         
-                # Keep these user emails (will be recreated by auto-setup)
-                keep_emails = [
-                    "user@admin.nl",  # Case-insensitive matching
-                    "user@company.nl",
-                    "user@recruiter.nl",
-                    "user@kandidaat.nl"
-                ]
+        # Keep these user emails (will be recreated by auto-setup)
+        keep_emails = [
+            "user@admin.nl",  # Case-insensitive matching
+            "user@company.nl",
+            "user@recruiter.nl",
+            "user@kandidaat.nl"
+        ]
         
         # Get IDs of users to keep
         users_to_keep = db.query(UserDB).filter(UserDB.email.in_(keep_emails)).all()
