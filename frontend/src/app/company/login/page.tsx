@@ -4,6 +4,7 @@ import { useState, useRef, FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import Header from '../../../components/Header';
 import { useAuth } from '../../../contexts/AuthContext';
+import { login as loginApi, AuthResponse } from '../../../lib/auth';
 
 interface AccountTile {
   email: string;
@@ -74,7 +75,12 @@ export default function CompanyLogin() {
 
     try {
       console.log('[Login Page] Attempting login...');
-      const loginResponse = await login(email, password);
+      // Call loginApi directly to get the response with user data
+      const loginResponse: AuthResponse = await loginApi(email, password);
+      
+      // Also update the auth context
+      await login(email, password);
+      
       console.log('[Login Page] Login successful, redirecting...');
       
       // Get role from login response (user is already available in the response)
