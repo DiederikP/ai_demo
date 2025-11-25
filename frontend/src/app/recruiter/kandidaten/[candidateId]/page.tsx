@@ -626,7 +626,6 @@ export default function RecruiterCandidateDetail() {
                   </p>
                 </div>
               )}
-              </div>
             </div>
           </div>
         </div>
