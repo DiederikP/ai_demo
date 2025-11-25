@@ -5,8 +5,16 @@ const BACKEND_URL = process.env.BACKEND_URL || process.env.NEXT_PUBLIC_BACKEND_U
 export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData();
+    const authHeader = request.headers.get('authorization') || request.headers.get('Authorization');
+    
+    const headers: HeadersInit = {};
+    if (authHeader) {
+      headers['Authorization'] = authHeader;
+    }
+
     const backendResponse = await fetch(`${BACKEND_URL}/upload-motivation-letter`, {
       method: 'POST',
+      headers,
       body: formData,
     });
 

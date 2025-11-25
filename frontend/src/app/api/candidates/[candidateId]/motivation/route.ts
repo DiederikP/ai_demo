@@ -5,8 +5,16 @@ const BACKEND_URL = process.env.BACKEND_URL || process.env.NEXT_PUBLIC_BACKEND_U
 export async function DELETE(_: NextRequest, { params }: { params: Promise<{ candidateId: string }> }) {
   try {
     const { candidateId } = await params;
+    const authHeader = _.headers.get('authorization') || _.headers.get('Authorization');
+
+    const headers: HeadersInit = {};
+    if (authHeader) {
+      headers['Authorization'] = authHeader;
+    }
+
     const response = await fetch(`${BACKEND_URL}/candidates/${candidateId}/motivation`, {
       method: 'DELETE',
+      headers,
     });
     const data = await response.json().catch(() => ({}));
     return NextResponse.json(data, { status: response.status });
