@@ -691,6 +691,55 @@ def ensure_column_exists(table_name: str, column_name: str, declaration: str):
         # Table might not exist yet, which is fine
         print(f"Note: Could not check columns for {table_name}: {e}")
 
+SCHEMA_COLUMN_UPDATES = [
+    ("users", "company_id", "TEXT"),
+    ("users", "password_hash", "TEXT"),
+    ("evaluations", "job_id", "TEXT"),
+    ("job_postings", "company_id", "TEXT"),
+    ("job_postings", "assigned_agency_id", "TEXT"),
+    ("job_postings", "timeline_stage", "TEXT"),
+    ("job_postings", "weighted_requirements", "TEXT"),
+    ("personas", "company_id", "TEXT"),
+    ("personas", "personal_criteria", "TEXT"),
+    ("personas", "created_at", "TIMESTAMP WITH TIME ZONE"),
+    ("personas", "updated_at", "TIMESTAMP WITH TIME ZONE"),
+    ("candidates", "motivation_reason", "TEXT"),
+    ("candidates", "test_results", "TEXT"),
+    ("candidates", "age", "INTEGER"),
+    ("candidates", "years_experience", "INTEGER"),
+    ("candidates", "skill_tags", "TEXT"),
+    ("candidates", "prior_job_titles", "TEXT"),
+    ("candidates", "certifications", "TEXT"),
+    ("candidates", "education_level", "TEXT"),
+    ("candidates", "location", "TEXT"),
+    ("candidates", "communication_level", "TEXT"),
+    ("candidates", "availability_per_week", "INTEGER"),
+    ("candidates", "notice_period", "TEXT"),
+    ("candidates", "salary_expectation", "INTEGER"),
+    ("candidates", "source", "TEXT"),
+    ("candidates", "submitted_by_company_id", "TEXT"),
+    ("candidates", "pipeline_stage", "TEXT"),
+    ("candidates", "pipeline_status", "TEXT"),
+]
+
+_schema_bootstrapped = False
+
+def bootstrap_schema():
+    """Ensure all tables/columns exist before the app starts."""
+    global _schema_bootstrapped
+    if _schema_bootstrapped:
+        return
+    
+    print("🔧 Bootstrapping database schema...")
+    Base.metadata.create_all(bind=engine)
+    for table, column, declaration in SCHEMA_COLUMN_UPDATES:
+        ensure_column_exists(table, column, declaration)
+    
+    default_company_id = ensure_default_company()
+    assign_users_without_company(default_company_id)
+    _schema_bootstrapped = True
+    print("✅ Database schema bootstrapped")
+
 def ensure_default_company() -> Optional[str]:
     db = SessionLocal()
     try:
@@ -824,31 +873,8 @@ def seed_sample_company_users():
     finally:
         db.close()
 
-# Ensure schema upgrades for company support
-ensure_column_exists("users", "company_id", "TEXT")
-ensure_column_exists("users", "password_hash", "TEXT")
-ensure_column_exists("evaluations", "job_id", "TEXT")
-# Ensure extended candidate fields exist (for both SQLite and PostgreSQL)
-ensure_column_exists("candidates", "motivation_reason", "TEXT")
-ensure_column_exists("candidates", "test_results", "TEXT")
-ensure_column_exists("candidates", "age", "INTEGER")
-ensure_column_exists("candidates", "years_experience", "INTEGER")
-ensure_column_exists("candidates", "skill_tags", "TEXT")
-ensure_column_exists("candidates", "prior_job_titles", "TEXT")
-ensure_column_exists("candidates", "certifications", "TEXT")
-ensure_column_exists("candidates", "education_level", "TEXT")
-ensure_column_exists("candidates", "location", "TEXT")
-ensure_column_exists("candidates", "communication_level", "TEXT")
-ensure_column_exists("candidates", "availability_per_week", "INTEGER")
-ensure_column_exists("candidates", "notice_period", "TEXT")
-ensure_column_exists("candidates", "salary_expectation", "INTEGER")
-ensure_column_exists("candidates", "source", "TEXT")
-ensure_column_exists("candidates", "submitted_by_company_id", "TEXT")
-ensure_column_exists("candidates", "pipeline_stage", "TEXT")
-ensure_column_exists("candidates", "pipeline_status", "TEXT")
-# Ensure scheduled_appointments table exists (created by Base.metadata.create_all, but ensure columns exist)
-default_company_id = ensure_default_company()
-assign_users_without_company(default_company_id)
+# Ensure schema upgrades run once on startup
+bootstrap_schema()
 # seed_sample_company_users() will be called after get_password_hash is defined (see below)
 
 # -----------------------------

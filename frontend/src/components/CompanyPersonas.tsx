@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
+import { getAuthHeaders } from '../lib/auth';
 
 interface Persona {
   id: string;
@@ -276,10 +277,21 @@ export default function CompanyPersonas() {
   const handlePersonaDelete = async (personaId: string) => {
     if (!confirm('Weet je zeker dat je deze digitale werknemer wilt verwijderen?')) return;
     try {
-      const response = await fetch(`/api/personas?id=${personaId}`, { method: 'DELETE' });
+      const headers = getAuthHeaders();
+      const response = await fetch(`/api/personas?id=${personaId}`, { 
+        method: 'DELETE',
+        headers
+      });
       if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(errorText || 'Verwijderen mislukt');
+        let errorMessage = 'Verwijderen mislukt';
+        try {
+          const errorData = await response.json();
+          errorMessage = errorData.detail || errorData.error || errorMessage;
+        } catch {
+          const errorText = await response.text();
+          if (errorText) errorMessage = errorText;
+        }
+        throw new Error(errorMessage);
       }
       await loadPersonas();
       if (selectedPersonaId === personaId) {
@@ -287,7 +299,7 @@ export default function CompanyPersonas() {
       }
     } catch (error) {
       console.error('Error deleting persona:', error);
-      alert('Kon digitale werknemer niet verwijderen.');
+      alert(error instanceof Error ? error.message : 'Kon digitale werknemer niet verwijderen.');
     }
   };
 
@@ -387,25 +399,49 @@ export default function CompanyPersonas() {
           const totalEvaluations = activities.reduce((sum, a) => sum + a.activity_count, 0);
           const evaluationDetails = personaEvaluationDetails[persona.id] || [];
           return (
-            <div 
-              key={persona.id}
-              className="bg-white rounded-xl shadow-md border-2 border-gray-200 p-8 cursor-pointer hover:shadow-lg hover:border-barnes-violet/50 transition-all"
-              onClick={() => setSelectedPersonaId(selectedPersonaId === persona.id ? null : persona.id)}
-            >
-              <div className="flex items-start gap-4 mb-6">
-                <div className="w-16 h-16 rounded-full bg-gradient-to-br from-barnes-violet/20 to-barnes-violet/10 flex items-center justify-center flex-shrink-0">
-                  <span className="text-3xl font-bold text-barnes-violet">
-                    {persona.display_name[0]}
-                  </span>
-                </div>
-                <div className="flex-1 min-w-0">
-                  <h3 className="text-xl font-bold text-barnes-dark-violet mb-1">{persona.display_name}</h3>
-                  <p className="text-sm text-barnes-dark-gray mb-2">Digitale werknemer</p>
-                  <p className="text-xs text-barnes-dark-gray font-mono bg-gray-50 px-2 py-1 rounded inline-block">
-                    {persona.name}
-                  </p>
-                </div>
+          <div 
+            key={persona.id}
+            className="bg-white rounded-xl shadow-md border-2 border-gray-200 p-6 cursor-pointer hover:shadow-lg hover:border-barnes-violet/50 transition-all"
+            onClick={() => setSelectedPersonaId(selectedPersonaId === persona.id ? null : persona.id)}
+          >
+            <div className="flex items-start gap-4 mb-4">
+              <div className="w-16 h-16 rounded-full bg-gradient-to-br from-barnes-violet/20 to-barnes-violet/10 flex items-center justify-center flex-shrink-0">
+                <span className="text-3xl font-bold text-barnes-violet">
+                  {persona.display_name[0]}
+                </span>
               </div>
+              <div className="flex-1 min-w-0">
+                <h3 className="text-xl font-bold text-barnes-dark-violet mb-1">{persona.display_name}</h3>
+                <p className="text-sm text-barnes-dark-gray mb-2">Digitale werknemer</p>
+                <p className="text-xs text-barnes-dark-gray font-mono bg-gray-50 px-2 py-1 rounded inline-block">
+                  {persona.name}
+                </p>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    openPersonaModal(persona);
+                  }}
+                  className="p-2 rounded-full border border-gray-200 text-barnes-dark-gray hover:border-barnes-violet hover:text-barnes-violet transition-colors"
+                  title="Bewerken"
+                >
+                  ✏️
+                </button>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handlePersonaDelete(persona.id);
+                  }}
+                  className="p-2 rounded-full border border-gray-200 text-red-500 hover:border-red-300 hover:bg-red-50 transition-colors"
+                  title="Verwijderen"
+                >
+                  🗑️
+                </button>
+              </div>
+            </div>
               
               <div className="space-y-3 text-sm">
                 <div className="grid grid-cols-2 gap-3">
