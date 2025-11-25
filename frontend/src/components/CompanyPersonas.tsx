@@ -226,25 +226,39 @@ export default function CompanyPersonas() {
     e.preventDefault();
     setIsSavingPersona(true);
     try {
+      const currentCompanyId = typeof window !== 'undefined'
+        ? localStorage.getItem('current_company_id')
+        : null;
+
+      const payload = {
+        ...personaForm,
+        ...(editingPersona && { id: editingPersona.id }),
+        ...(currentCompanyId ? { company_id: currentCompanyId } : {})
+      };
+
       const response = await fetch('/api/personas', {
         method: editingPersona ? 'PUT' : 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ...personaForm,
-          ...(editingPersona && { id: editingPersona.id })
-        })
+        body: JSON.stringify(payload)
       });
 
       if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(errorText || 'Opslaan mislukt');
+        let errorMessage = 'Opslaan mislukt';
+        try {
+          const errorData = await response.json();
+          errorMessage = errorData.detail || errorData.error || errorMessage;
+        } catch {
+          const errorText = await response.text();
+          if (errorText) errorMessage = errorText;
+        }
+        throw new Error(errorMessage);
       }
 
       await loadPersonas();
       closePersonaModal();
     } catch (error) {
       console.error('Error saving persona:', error);
-      alert('Kon digitale werknemer niet opslaan. Probeer het opnieuw.');
+      alert(error instanceof Error ? error.message : 'Kon digitale werknemer niet opslaan. Probeer het opnieuw.');
     } finally {
       setIsSavingPersona(false);
     }
