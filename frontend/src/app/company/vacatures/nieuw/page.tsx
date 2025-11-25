@@ -19,65 +19,6 @@ export default function NewJobPage() {
   const [isLoadingFromUrl, setIsLoadingFromUrl] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [selectedWatchers, setSelectedWatchers] = useState<string[]>([]);
-  const [showAiFeedback, setShowAiFeedback] = useState(false);
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [aiAnalysis, setAiAnalysis] = useState<any>(null);
-  const [tempJobId, setTempJobId] = useState<string | null>(null);
-
-  const handleAnalyzeJob = async () => {
-    if (!formData.title || !formData.description) {
-      alert('Vul ten minste titel en beschrijving in voordat je AI feedback aanvraagt');
-      return;
-    }
-    
-    setIsAnalyzing(true);
-    try {
-      // First save as draft to get job ID
-      const requestData = {
-        ...formData,
-        watcher_user_ids: selectedWatchers
-      };
-      
-      const { getAuthHeaders } = await import('../../../../lib/auth');
-      const headers = getAuthHeaders();
-      
-      const saveResponse = await fetch('/api/upload-job', {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(requestData)
-      });
-      
-      if (!saveResponse.ok) {
-        throw new Error('Kon vacature niet opslaan voor analyse');
-      }
-      
-      const saveResult = await saveResponse.json();
-      const jobId = saveResult.job?.id || saveResult.id;
-      setTempJobId(jobId);
-      
-      // Now analyze the job
-      const { getAuthHeaders: getAnalyzeHeaders } = await import('../../../../lib/auth');
-      const analyzeHeaders = getAnalyzeHeaders();
-      
-      const analyzeResponse = await fetch('/api/analyze-job', {
-        method: 'POST',
-        headers: analyzeHeaders,
-        body: JSON.stringify({ job_id: jobId })
-      });
-      
-      if (!analyzeResponse.ok) {
-        throw new Error('Kon vacature niet analyseren');
-      }
-      
-      const analyzeResult = await analyzeResponse.json();
-      setAiAnalysis(analyzeResult);
-      setShowAiFeedback(true);
-    } catch (error: any) {
-      alert(error.message || 'Analyse mislukt');
-    } finally {
-      setIsAnalyzing(false);
-    }
-  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -89,9 +30,8 @@ export default function NewJobPage() {
         watcher_user_ids: selectedWatchers
       };
       
-      // If we have a temp job ID, update it; otherwise create new
-      const url = tempJobId ? `/api/upload-job?id=${tempJobId}` : '/api/upload-job';
-      const method = tempJobId ? 'PUT' : 'POST';
+      const url = '/api/upload-job';
+      const method = 'POST';
       
       const { getAuthHeaders } = await import('../../../../lib/auth');
       const headers = getAuthHeaders();
@@ -109,7 +49,7 @@ export default function NewJobPage() {
       }
       
       const result = await response.json();
-      const jobId = result.job?.id || result.id || tempJobId;
+      const jobId = result.job?.id || result.id;
       
       // Add watchers if selected
       if (jobId && selectedWatchers.length > 0) {
@@ -292,55 +232,7 @@ export default function NewJobPage() {
               />
             </div>
 
-            {/* AI Feedback Section */}
-            {showAiFeedback && aiAnalysis && (
-              <div className="p-6 bg-blue-50 border-2 border-blue-200 rounded-xl">
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-lg font-semibold text-barnes-dark-violet">AI Feedback</h3>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowAiFeedback(false);
-                      setAiAnalysis(null);
-                    }}
-                    className="text-gray-500 hover:text-gray-700"
-                  >
-                    ✕
-                  </button>
-                </div>
-                <div className="space-y-4 text-sm">
-                  {aiAnalysis.analysis && (
-                    <div>
-                      <h4 className="font-medium text-barnes-dark-violet mb-2">Analyse:</h4>
-                      <div className="bg-white p-4 rounded-lg border border-gray-200 whitespace-pre-wrap">
-                        {aiAnalysis.analysis}
-                      </div>
-                    </div>
-                  )}
-                  {aiAnalysis.suggestions && (
-                    <div>
-                      <h4 className="font-medium text-barnes-dark-violet mb-2">Suggesties:</h4>
-                      <div className="bg-white p-4 rounded-lg border border-gray-200 whitespace-pre-wrap">
-                        {aiAnalysis.suggestions}
-                      </div>
-                    </div>
-                  )}
-                </div>
-                <p className="text-xs text-gray-500 mt-4">
-                  💡 Je kunt de vacature aanpassen op basis van deze feedback voordat je deze opslaat.
-                </p>
-              </div>
-            )}
-
-            <div className="flex justify-between items-center">
-              <button
-                type="button"
-                onClick={handleAnalyzeJob}
-                disabled={isAnalyzing || !formData.title || !formData.description}
-                className="btn-secondary disabled:opacity-50"
-              >
-                {isAnalyzing ? 'AI analyseert...' : '🤖 Vraag AI Feedback'}
-              </button>
+            <div className="flex justify-end">
               <button
                 type="submit"
                 disabled={isSaving}

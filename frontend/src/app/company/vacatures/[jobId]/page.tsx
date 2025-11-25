@@ -17,6 +17,7 @@ interface JobDescription {
   salary_range: string;
   created_at: string;
   ai_analysis?: any;
+  assigned_agency_id?: string | null;
 }
 
 interface Candidate {
@@ -616,13 +617,13 @@ export default function JobDetailPage() {
           {/* Overview Tab */}
           {activeTab === 'overview' && (
             <div className="space-y-6">
-              {/* Candidate Pipeline - Made More Prominent */}
+              {/* Vacature Pipeline - Made More Prominent */}
               <div className="bg-gradient-to-br from-barnes-violet/10 to-barnes-dark-violet/10 rounded-2xl border-2 border-barnes-violet/30 p-8 shadow-lg">
                 <div className="flex items-center justify-between mb-6">
                   <div>
-                    <h2 className="text-2xl font-bold text-barnes-dark-violet mb-2">Kandidaat Pipeline</h2>
+                    <h2 className="text-2xl font-bold text-barnes-dark-violet mb-2">Vacature Pipeline</h2>
                     <p className="text-sm text-barnes-dark-gray">
-                      Volg de voortgang van kandidaten door het recruitment proces
+                      Volg de voortgang van de vacature: van aanbieding aan recruiters tot kandidaten door het proces
                     </p>
                   </div>
                   <div className="text-right">
@@ -654,6 +655,10 @@ export default function JobDetailPage() {
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
                   {Object.entries(pipelineStages).map(([key, stageConfig]) => {
                     const stageCandidates = candidateStages[key as keyof typeof candidateStages];
+                    // For "introduced" stage, show vacature status (is it sent to recruiters?)
+                    const isVacatureSentToRecruiters = key === 'introduced' && job?.assigned_agency_id;
+                    const showVacatureStatus = key === 'introduced';
+                    
                     return (
                       <div
                         key={key}
@@ -668,6 +673,21 @@ export default function JobDetailPage() {
                       >
                         <h3 className="text-base font-bold mb-2">{stageConfig.title}</h3>
                         <p className="text-xs opacity-80 mb-3">{stageConfig.description}</p>
+                        {showVacatureStatus && (
+                          <div className="mb-3 p-2 rounded bg-white/80 border border-gray-200">
+                            {isVacatureSentToRecruiters ? (
+                              <div className="flex items-center gap-2">
+                                <span className="w-2 h-2 rounded-full bg-green-500"></span>
+                                <p className="text-xs font-medium text-green-700">Vacature aangeboden aan recruiters</p>
+                              </div>
+                            ) : (
+                              <div className="flex items-center gap-2">
+                                <span className="w-2 h-2 rounded-full bg-gray-400"></span>
+                                <p className="text-xs font-medium text-gray-600">Nog niet aangeboden</p>
+                              </div>
+                            )}
+                          </div>
+                        )}
                         <div className="flex items-center justify-between mb-3">
                           <p className="text-sm font-semibold">{stageCandidates.length} kandidaat{stageCandidates.length !== 1 ? 'en' : ''}</p>
                           {stageCandidates.length > 0 && (
