@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { useAuth } from '../contexts/AuthContext';
 
 interface Persona {
   id: string;
@@ -30,6 +31,7 @@ interface User {
 }
 
 export default function CompanyPersonas() {
+  const { user } = useAuth();
   const [personas, setPersonas] = useState<Persona[]>([]);
   const [users, setUsers] = useState<User[]>([]);
   const [personaActivities, setPersonaActivities] = useState<Record<string, PersonaActivity[]>>({});
@@ -45,10 +47,18 @@ export default function CompanyPersonas() {
   const [isSavingPersona, setIsSavingPersona] = useState(false);
   const [activeTab, setActiveTab] = useState<'digital' | 'users'>('digital');
 
+  const getActiveCompanyId = () => {
+    if (user?.company_id) return user.company_id;
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('current_company_id');
+    }
+    return null;
+  };
+
   useEffect(() => {
     loadPersonas();
     loadUsers();
-  }, []);
+  }, [user?.company_id]);
 
   useEffect(() => {
     if (personas.length > 0) {
@@ -58,7 +68,9 @@ export default function CompanyPersonas() {
 
   const loadPersonas = async () => {
     try {
-      const response = await fetch('/api/personas');
+      const companyId = getActiveCompanyId();
+      const query = companyId ? `?company_id=${encodeURIComponent(companyId)}` : '';
+      const response = await fetch(`/api/personas${query}`);
       if (response.ok) {
         const data = await response.json();
         setPersonas(data.personas || []);
@@ -73,8 +85,7 @@ export default function CompanyPersonas() {
       const response = await fetch('/api/users');
       if (response.ok) {
         const data = await response.json();
-        // Get current company ID from localStorage
-        const currentCompanyId = localStorage.getItem('current_company_id');
+        const currentCompanyId = getActiveCompanyId();
         if (currentCompanyId && data.users) {
           // Filter users by company
           const companyUsers = data.users.filter((user: User) => 
@@ -226,9 +237,7 @@ export default function CompanyPersonas() {
     e.preventDefault();
     setIsSavingPersona(true);
     try {
-      const currentCompanyId = typeof window !== 'undefined'
-        ? localStorage.getItem('current_company_id')
-        : null;
+      const currentCompanyId = getActiveCompanyId();
 
       const payload = {
         ...personaForm,
