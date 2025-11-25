@@ -388,14 +388,15 @@ export default function JobDetailPage() {
     const conversationCount = candidateConversations.length;
 
     // New logic: 
-    // - introduced: Vacature sent to recruiter (candidate exists but no activity)
-    // - review: Candidate added (candidate exists)
+    // - introduced: Vacature naar recruiter (geen kandidaat gekoppeld)
+    //   (kandidaten zelf starten vanaf 'review')
+    // - review: Kandidaat toegevoegd (wacht op AI analyse)
     // - first_interview: AI Analysis done (has evaluations/debates)
     // - second_interview: First interview done (1 conversation)
     // - offer: Second interview done (2+ conversations)
     // - complete: Process complete (accepted/rejected or many conversations)
     
-    if (!hasEvaluations && !hasDebates && conversationCount === 0) return 'introduced';
+    if (!hasEvaluations && !hasDebates && conversationCount === 0) return 'review';
     if (hasEvaluations || hasDebates) {
       if (conversationCount === 0) return 'first_interview'; // AI Analysis done
       if (conversationCount === 1) return 'second_interview'; // First interview

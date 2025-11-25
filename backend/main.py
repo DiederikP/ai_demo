@@ -915,6 +915,8 @@ def auto_setup_users():
     """Automatically set up required users if they don't exist"""
     try:
         db = SessionLocal()
+        candidate_summary_for_prompt = ""
+        job_summary_for_prompt = ""
         required_emails = [
             "user@admin.nl",  # Store in lowercase for consistency
             "user@company.nl",
@@ -3103,7 +3105,8 @@ async def upload_resume(
             existing_candidate.notice_period = notice_period_str
             existing_candidate.salary_expectation = salary_expectation_int
             existing_candidate.source = source_str
-            existing_candidate.pipeline_stage = pipeline_stage_str or 'introduced'
+            # Default to 'review' (candidate added) if no explicit stage provided
+            existing_candidate.pipeline_stage = pipeline_stage_str or 'review'
             existing_candidate.pipeline_status = pipeline_status_str or 'active'
             
             db.commit()
@@ -3261,7 +3264,7 @@ async def upload_resume(
                     existing_candidate.salary_expectation = salary_expectation_int
                     existing_candidate.source = source_str
                     existing_candidate.submitted_by_company_id = final_submitted_by_company_id
-                    existing_candidate.pipeline_stage = pipeline_stage_str or existing_candidate.pipeline_stage or 'introduced'
+                    existing_candidate.pipeline_stage = pipeline_stage_str or existing_candidate.pipeline_stage or 'review'
                     existing_candidate.pipeline_status = pipeline_status_str or existing_candidate.pipeline_status or 'active'
                     
                     db.commit()
@@ -3337,7 +3340,7 @@ async def upload_resume(
                 salary_expectation=salary_expectation_int,
                 source=source_str,
                 submitted_by_company_id=final_submitted_by_company_id,  # Track which agency/company submitted
-                pipeline_stage=pipeline_stage_str or 'introduced',
+                pipeline_stage=pipeline_stage_str or 'review',
                 pipeline_status=pipeline_status_str or 'active'
             )
             
@@ -3631,6 +3634,23 @@ Location: {job.location or 'N/A'}
 Salary Range: {job.salary_range or 'N/A'}
 Description: {job_desc}
 Requirements: {job_req}"""
+                job_summary_for_prompt = f"{job.title or 'Onbekende functie'} bij {job.company or 'Onbekend bedrijf'}"
+        if not job_summary_for_prompt:
+            job_summary_for_prompt = "Onbekende functie"
+        
+        # Build concise candidate summary for downstream prompts
+        candidate_name_display = candidate.name or "De kandidaat"
+        exp_years = candidate.years_experience or candidate.experience_years
+        summary_parts = [f"{candidate_name_display} wordt beoordeeld voor {job_summary_for_prompt}."]
+        if candidate.location:
+            summary_parts.append(f"Locatie: {candidate.location}.")
+        if exp_years:
+            summary_parts.append(f"Heeft ongeveer {exp_years} jaar ervaring.")
+        if candidate.availability_per_week:
+            summary_parts.append(f"Beschikbaarheid: {candidate.availability_per_week} uur per week.")
+        if candidate.notice_period:
+            summary_parts.append(f"Opzegtermijn: {candidate.notice_period}.")
+        candidate_summary_for_prompt = " ".join(summary_parts).strip()
         
         # Include motivational letter if available (truncated)
         motivational_info = ""
@@ -3996,7 +4016,11 @@ Geef een score (1-10), sterke punten, aandachtspunten, analyse en advies. Benoem
                 
                 ratings_text = '\n'.join(ratings_overview)
                 
-                combined_prompt = f"""Combineer deze evaluaties tot een samenvattend advies:
+                combined_prompt = f"""Je combineert de beoordelingen van de digitale werknemers tot één advies voor de kandidaat.
+
+CONTEXT:
+- Kandidaat: {candidate_summary_for_prompt}
+- Vacature: {job_summary_for_prompt}
 
 SCORES:
 {ratings_text}
@@ -4023,11 +4047,12 @@ combined_score is optioneel (wordt automatisch berekend). Gebruik ALTIJD /10 not
                 
                 # Call OpenAI for combined analysis
                 # Use the already imported variables from top of file
-                combined_system_message = f"""Je combineert evaluaties tot een samenhangend advies.
+                combined_system_message = f"""Je combineert evaluaties tot een samenhangend advies over de geschiktheid van de kandidaat voor de vacature.
 
 BELANGRIJK:
 - Alle scores zijn op 1-10 schaal
 - Gebruik ALTIJD /10 notatie (bijv. 7.5/10, 8.0/10)
+- De eindconclusie gaat ALTIJD over de kandidaat en zijn/haar fit met de rol, niet over de digitale werknemers
 - >= 7.0 = goed, >= 8.5 = uitstekend"""
                 
                 combined_result = call_openai_safe([
