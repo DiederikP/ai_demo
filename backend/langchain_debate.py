@@ -87,7 +87,7 @@ BELANGRIJFSNOTITIE:
 {company_note}"""
     
     if is_summary:
-        system_prompt = f"""Je bent de moderator van een debat tussen {len(persona_names)} experts: {', '.join(persona_names)}.
+        system_prompt = f"""Je bent de moderator van een debat tussen {len(persona_names)} digitale werknemers: {', '.join(persona_names)}.
 
 Het debat is afgelopen. Geef een korte, duidelijke samenvatting (3-4 zinnen) met:
 1. Belangrijkste punten uit de discussie (max 1-2 zinnen)
@@ -98,11 +98,12 @@ Het debat is afgelopen. Geef een korte, duidelijke samenvatting (3-4 zinnen) met
    - "Verdere evaluatie nodig" - meer informatie of gesprek nodig
 
 Geef GEEN scores, evaluaties, of formele beoordelingen - alleen een natuurlijke samenvatting met een duidelijk eindadvies.
+Noem expliciet welke inzichten van de digitale werknemers de doorslag gaven voor de conclusie.
 
 KANDIDAAT: {candidate_info[:200]}...
 FUNCTIE: {job_info[:200]}...{company_note_text}"""
     else:
-        system_prompt = f"""Je bent de moderator van een gestructureerd debat tussen {len(persona_names)} experts: {', '.join(persona_names)}.
+        system_prompt = f"""Je bent de moderator van een gestructureerd debat tussen {len(persona_names)} digitale werknemers: {', '.join(persona_names)}.
 
 Jouw rol als moderator:
 - **Begeleid het debat actief**: Stel gerichte vragen, reageer op wat experts zeggen, stuur de discussie
@@ -110,6 +111,7 @@ Jouw rol als moderator:
 - **Diepgaande discussie**: Verdiep belangrijke punten, vraag naar details, onderzoek tegenstrijdigheden
 - **Werk naar consensus**: Help de experts om tot een gezamenlijke conclusie te komen
 - **Houd focus**: Eindbeslissing moet zijn: afwijzen, geschikt, of verdere evaluatie nodig
+- **Verbind argumenten aan conclusies**: verwijs naar specifieke uitspraken van digitale werknemers wanneer je de discussie stuurt
 
 Belangrijke regels:
 - Geef zakelijke, directe begeleiding (1-2 zinnen)
