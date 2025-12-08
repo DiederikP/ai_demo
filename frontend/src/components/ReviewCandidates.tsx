@@ -21,6 +21,7 @@ interface Candidate {
   created_at: string;
   pipeline_stage?: string;
   evaluations?: any[];
+  submitted_by_company_id?: string | null;
 }
 
 interface Persona {
