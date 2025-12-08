@@ -30,6 +30,7 @@ interface Persona {
   display_name: string;
   system_prompt: string;
   is_active: boolean;
+  created_at: string;
 }
 
 interface JobWithCandidates {
