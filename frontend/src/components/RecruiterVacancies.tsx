@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { getAuthHeaders } from '../lib/auth';
+import { LocationIcon, CurrencyDollarIcon } from './Icons';
 
 interface Vacancy {
   id: string;
@@ -88,11 +89,17 @@ export default function RecruiterVacancies() {
                 <div className="text-sm text-gray-500 mb-4">{vacancy.company}</div>
                 
                 {vacancy.location && (
-                  <div className="text-sm text-gray-600 mb-2">📍 {vacancy.location}</div>
+                  <div className="flex items-center gap-2 text-sm text-gray-600 mb-2">
+                    <LocationIcon className="w-4 h-4" />
+                    <span>{vacancy.location}</span>
+                  </div>
                 )}
                 
                 {vacancy.salary_range && (
-                  <div className="text-sm text-gray-600 mb-4">💰 {vacancy.salary_range}</div>
+                  <div className="flex items-center gap-2 text-sm text-gray-600 mb-4">
+                    <CurrencyDollarIcon className="w-4 h-4" />
+                    <span>{vacancy.salary_range}</span>
+                  </div>
                 )}
 
                 <button className="w-full mt-4 px-4 py-2 bg-barnes-violet text-white rounded-lg hover:bg-barnes-dark-violet transition-colors text-sm">
@@ -121,11 +128,17 @@ export default function RecruiterVacancies() {
                 <div className="text-sm text-gray-500 mb-4">{vacancy.company}</div>
                 
                 {vacancy.location && (
-                  <div className="text-sm text-gray-600 mb-2">📍 {vacancy.location}</div>
+                  <div className="flex items-center gap-2 text-sm text-gray-600 mb-2">
+                    <LocationIcon className="w-4 h-4" />
+                    <span>{vacancy.location}</span>
+                  </div>
                 )}
                 
                 {vacancy.salary_range && (
-                  <div className="text-sm text-gray-600 mb-4">💰 {vacancy.salary_range}</div>
+                  <div className="flex items-center gap-2 text-sm text-gray-600 mb-4">
+                    <CurrencyDollarIcon className="w-4 h-4" />
+                    <span>{vacancy.salary_range}</span>
+                  </div>
                 )}
 
                 <div className="flex items-center justify-between pt-4 border-t border-gray-200">

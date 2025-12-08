@@ -7,10 +7,11 @@ import NotificationCenter from './NotificationCenter';
 import { useAuth } from '../contexts/AuthContext';
 import { usePermissions } from '../hooks/usePermissions';
 import { getAuthHeaders } from '../lib/auth';
+import { HomeIcon, CogIcon, BriefcaseIcon, UsersIcon, DocumentTextIcon, ClipboardIcon, BellIcon } from './Icons';
 
 interface CompanyNavigationProps {
-  activeModule: 'dashboard' | 'vacatures' | 'personas' | 'kandidaten' | 'resultaten' | 'notifications' | 'overview';
-  onModuleChange: (module: 'dashboard' | 'vacatures' | 'personas' | 'kandidaten' | 'resultaten' | 'notifications' | 'overview') => void;
+  activeModule: 'home' | 'dashboard' | 'vacatures' | 'personas' | 'kandidaten' | 'resultaten' | 'notifications' | 'overview';
+  onModuleChange: (module: 'home' | 'dashboard' | 'vacatures' | 'personas' | 'kandidaten' | 'resultaten' | 'notifications' | 'overview') => void;
   onCollapsedChange?: (isCollapsed: boolean) => void;
 }
 
@@ -208,18 +209,19 @@ export default function CompanyNavigation({ activeModule, onModuleChange, onColl
   };
 
       const modules = [
-        { id: 'dashboard' as const, label: 'Nieuwe Evaluatie', icon: '⚙️' },
-        { id: 'vacatures' as const, label: 'Vacatures', icon: '💼' },
-        { id: 'personas' as const, label: 'Digitale Werknemers', icon: '👥' },
-        { id: 'kandidaten' as const, label: 'Kandidaten', icon: '📄' },
-        { id: 'resultaten' as const, label: 'Resultaten', icon: '📋' },
-        { id: 'notifications' as const, label: 'Notificaties', icon: '🔔' },
+        { id: 'home' as const, label: 'Home', icon: 'home', IconComponent: HomeIcon },
+        { id: 'dashboard' as const, label: 'Nieuwe Evaluatie', icon: 'cog', IconComponent: CogIcon },
+        { id: 'vacatures' as const, label: 'Vacatures', icon: 'briefcase', IconComponent: BriefcaseIcon },
+        { id: 'personas' as const, label: 'Digitale Werknemers', icon: 'users', IconComponent: UsersIcon },
+        { id: 'kandidaten' as const, label: 'Kandidaten', icon: 'document-text', IconComponent: DocumentTextIcon },
+        { id: 'resultaten' as const, label: 'Resultaten', icon: 'clipboard', IconComponent: ClipboardIcon },
+        { id: 'notifications' as const, label: 'Notificaties', icon: 'bell', IconComponent: BellIcon },
       ];
 
       // Add admin modules if user is admin
       const adminModules = isAdmin ? [
-        { id: 'admin-manage' as const, label: 'Admin: Records', icon: '🗑️', href: '/admin/manage', isLink: true },
-        { id: 'admin-reset' as const, label: 'Admin: Reset', icon: '🔄', href: '/admin/reset', isLink: true },
+        { id: 'admin-manage' as const, label: 'Admin: Records', icon: 'trash', href: '/admin/manage', isLink: true },
+        { id: 'admin-reset' as const, label: 'Admin: Reset', icon: 'refresh', href: '/admin/reset', isLink: true },
       ] : [];
       
       const allModules = [...modules, ...adminModules];
@@ -343,7 +345,11 @@ export default function CompanyNavigation({ activeModule, onModuleChange, onColl
                   'text-barnes-dark-gray hover:bg-gray-50'
                 }`}
               >
-                <span className="text-xl">{module.icon}</span>
+                {module.IconComponent ? (
+                  <module.IconComponent className={`w-5 h-5 ${activeModule === module.id ? 'text-barnes-violet' : 'text-barnes-dark-gray'}`} />
+                ) : (
+                  <span className="text-xl">{module.icon}</span>
+                )}
                 {!isCollapsed && <span className="font-medium">{module.label}</span>}
               </a>
             ) : (
@@ -358,7 +364,11 @@ export default function CompanyNavigation({ activeModule, onModuleChange, onColl
                     : 'text-barnes-dark-gray hover:bg-gray-50'
                 }`}
               >
-                <span className="text-xl">{module.icon}</span>
+                {module.IconComponent ? (
+                  <module.IconComponent className={`w-5 h-5 ${activeModule === module.id ? 'text-barnes-violet' : 'text-barnes-dark-gray'}`} />
+                ) : (
+                  <span className="text-xl">{module.icon}</span>
+                )}
                 {!isCollapsed && <span className="font-medium">{module.label}</span>}
               </button>
             )}

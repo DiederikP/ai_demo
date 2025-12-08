@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
+import { DocumentTextIcon, BriefcaseIcon, UsersIcon, ClipboardIcon, SearchIcon } from './Icons';
 
 interface SearchResult {
   type: 'candidate' | 'job' | 'persona' | 'result';
@@ -141,15 +142,15 @@ export default function GlobalSearch() {
   const getTypeIcon = (type: string) => {
     switch (type) {
       case 'candidate':
-        return '📄';
+        return <DocumentTextIcon className="w-5 h-5 text-barnes-dark-gray" />;
       case 'job':
-        return '💼';
+        return <BriefcaseIcon className="w-5 h-5 text-barnes-violet" />;
       case 'persona':
-        return '👥';
+        return <UsersIcon className="w-5 h-5 text-barnes-dark-gray" />;
       case 'result':
-        return '📋';
+        return <ClipboardIcon className="w-5 h-5 text-barnes-dark-gray" />;
       default:
-        return '🔍';
+        return <SearchIcon className="w-5 h-5 text-barnes-dark-gray" />;
     }
   };
 
@@ -252,7 +253,9 @@ export default function GlobalSearch() {
                         index === selectedIndex ? 'bg-barnes-violet/5' : ''
                       }`}
                     >
-                      <span className="text-2xl">{getTypeIcon(result.type)}</span>
+                      <div className="flex items-center justify-center w-8 h-8">
+                        {getTypeIcon(result.type)}
+                      </div>
                       <div className="flex-1 min-w-0">
                         <p className="font-medium text-barnes-dark-violet truncate">{result.title}</p>
                         {result.subtitle && (

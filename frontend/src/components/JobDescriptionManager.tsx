@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { buildAnalysisSections, buildExtensionBlock, AnalysisSection, ExtensionBlock } from '../utils/analysis';
 
 interface JobDescription {
@@ -38,6 +38,8 @@ export default function JobDescriptionManager({ jobs, onJobsChange }: JobDescrip
   const [aiAnalysis, setAiAnalysis] = useState<any>(null);
   const analysisSections = buildAnalysisSections(aiAnalysis);
   const extensionBlock = buildExtensionBlock(aiAnalysis);
+  const [agencies, setAgencies] = useState<Array<{ id: string; name: string; type: string; recruiters?: Array<{ id: string; name: string; email: string }> }>>([]);
+  const [selectedAgencyId, setSelectedAgencyId] = useState<string>('');
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -54,14 +56,21 @@ export default function JobDescriptionManager({ jobs, onJobsChange }: JobDescrip
       : null;
     
     try {
+      const payload: any = {
+        ...formData,
+        weighted_requirements: weightedRequirementsJson,
+        ...(editingJob && { id: editingJob.id })
+      };
+      
+      // Add assigned_agency_id if selected
+      if (selectedAgencyId) {
+        payload.assigned_agency_id = selectedAgencyId;
+      }
+      
       const response = await fetch('/api/upload-job', {
         method: editingJob ? 'PUT' : 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ...formData,
-          weighted_requirements: weightedRequirementsJson,
-          ...(editingJob && { id: editingJob.id })
-        })
+        body: JSON.stringify(payload)
       });
 
       if (response.ok) {
@@ -71,6 +80,7 @@ export default function JobDescriptionManager({ jobs, onJobsChange }: JobDescrip
         setFormData({ title: '', company: '', description: '', requirements: '', location: '', salary_range: '' });
         setWeightedRequirements([]);
         setJobUrl(''); // Clear URL field
+        setSelectedAgencyId(''); // Clear agency selection
       } else {
         const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
         alert(`Failed to save job: ${errorData.error || errorData.detail || 'Unknown error'}`);
@@ -124,6 +134,25 @@ export default function JobDescriptionManager({ jobs, onJobsChange }: JobDescrip
     setIsOpen(true);
   };
 
+  // Load agencies when modal opens for new jobs
+  const loadAgencies = async () => {
+    try {
+      const response = await fetch('/api/recruiter-agencies');
+      if (response.ok) {
+        const result = await response.json();
+        setAgencies(result.agencies || []);
+      }
+    } catch (error) {
+      console.error('Error loading agencies:', error);
+    }
+  };
+
+  useEffect(() => {
+    if (isOpen && !editingJob) {
+      loadAgencies();
+    }
+  }, [isOpen, editingJob]);
+
   const handleFillFromUrl = async () => {
     if (!jobUrl || !jobUrl.trim()) {
       alert('Please enter a valid URL');
@@ -169,7 +198,14 @@ export default function JobDescriptionManager({ jobs, onJobsChange }: JobDescrip
   return (
     <>
       <button
-        onClick={() => setIsOpen(true)}
+        onClick={() => {
+          setSelectedAgencyId('');
+          setEditingJob(null);
+          setFormData({ title: '', company: '', description: '', requirements: '', location: '', salary_range: '' });
+          setWeightedRequirements([]);
+          setJobUrl('');
+          setIsOpen(true);
+        }}
         className="btn-secondary text-sm"
       >
         Manage Jobs
@@ -361,6 +397,52 @@ export default function JobDescriptionManager({ jobs, onJobsChange }: JobDescrip
                   />
                 </div>
               </div>
+
+              {/* Agency Assignment Section */}
+              {!editingJob && (
+                <div className="p-4 bg-gray-50 rounded-lg border border-gray-200">
+                  <label className="block text-sm font-medium mb-2 text-barnes-dark-violet">
+                    Toewijzen aan Recruiter/Agency (Optioneel)
+                  </label>
+                  <p className="text-xs text-barnes-dark-gray mb-3">
+                    Selecteer een recruiter of agency om deze vacature aan toe te wijzen. Laat leeg om niet toe te wijzen.
+                    <br />
+                    <strong>Let op:</strong> Deze vacature wordt automatisch gekoppeld aan uw bedrijfsaccount.
+                  </p>
+                  <select
+                    value={selectedAgencyId}
+                    onChange={(e) => setSelectedAgencyId(e.target.value)}
+                    className="input-field w-full"
+                  >
+                    <option value="">-- Geen toewijzing --</option>
+                    {agencies.map((agency) => {
+                      if (agency.type === 'company') {
+                        return (
+                          <optgroup key={agency.id} label={agency.name}>
+                            {agency.recruiters?.map((recruiter) => (
+                              <option key={recruiter.id} value={recruiter.id}>
+                                {recruiter.name} ({recruiter.email})
+                              </option>
+                            ))}
+                          </optgroup>
+                        );
+                      } else {
+                        return (
+                          <option key={agency.id} value={agency.id}>
+                            {agency.name}
+                            {agency.recruiters && agency.recruiters.length > 0 && ` (${agency.recruiters.length} recruiter${agency.recruiters.length !== 1 ? 's' : ''})`}
+                          </option>
+                        );
+                      }
+                    })}
+                  </select>
+                  {selectedAgencyId && (
+                    <p className="text-xs text-barnes-violet mt-2">
+                      ✓ Vacature wordt toegewezen aan de geselecteerde recruiter/agency
+                    </p>
+                  )}
+                </div>
+              )}
               
               {/* AI Analysis Section */}
               {editingJob && (

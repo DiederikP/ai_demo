@@ -1,5 +1,7 @@
 'use client';
 
+import { CurrencyDollarIcon, UsersIcon, CogIcon, UserIcon } from './Icons';
+
 interface Persona {
   id: string;
   name: string;
@@ -16,19 +18,21 @@ interface MultiSelectPersonaCardProps {
 }
 
 export default function MultiSelectPersonaCard({ persona, isSelected, onToggle }: MultiSelectPersonaCardProps) {
-  const iconMap: { [key: string]: string } = {
-    'finance': '💰',
-    'hiring_manager': '👥',
-    'tech_lead': '⚙️',
-    'hr_specialist': '👤'
+  const iconMap: { [key: string]: React.ComponentType<{ className?: string }> } = {
+    'finance': CurrencyDollarIcon,
+    'hiring_manager': UsersIcon,
+    'tech_lead': CogIcon,
+    'hr_specialist': UserIcon
   };
   
   const colorMap: { [key: string]: string } = {
     'finance': 'border-barnes-orange bg-barnes-orange/5',
     'hiring_manager': 'border-barnes-violet bg-barnes-violet/5',
-    'tech_lead': 'border-barnes-orange-red bg-barnes-orange-red/5',
+    'tech_lead': 'border-barnes-blue bg-barnes-blue/5',
     'hr_specialist': 'border-barnes-dark-violet bg-barnes-dark-violet/5'
   };
+
+  const IconComponent = iconMap[persona.name] || UserIcon;
 
   return (
     <button
@@ -50,7 +54,9 @@ export default function MultiSelectPersonaCard({ persona, isSelected, onToggle }
         )}
       </div>
 
-      <div className="text-3xl mb-3">{iconMap[persona.name] || '👤'}</div>
+      <div className="mb-3">
+        <IconComponent className={`w-8 h-8 ${isSelected ? 'text-barnes-violet' : 'text-barnes-dark-gray'}`} />
+      </div>
       <div className="font-semibold text-barnes-dark-violet mb-2">{persona.display_name}</div>
       <p className="text-sm text-barnes-dark-gray leading-relaxed line-clamp-4">
         {persona.system_prompt}

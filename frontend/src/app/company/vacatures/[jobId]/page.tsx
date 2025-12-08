@@ -77,13 +77,14 @@ export default function JobDetailPage() {
     notes: '',
   });
   const [isSavingSchedule, setIsSavingSchedule] = useState(false);
+  const [showJobPreview, setShowJobPreview] = useState(false);
 
   useEffect(() => {
     loadData();
-    // Auto-refresh pipeline every 15 seconds
+    // Auto-refresh pipeline every 60 seconds (reduced frequency to prevent constant reloading)
     const interval = setInterval(() => {
       loadData();
-    }, 15000);
+    }, 60000);
     return () => clearInterval(interval);
   }, [jobId]);
 
@@ -209,7 +210,21 @@ export default function JobDetailPage() {
         const data = await response.json().catch(() => ({ error: 'Analyse mislukt' }));
         throw new Error(data.error || data.detail || 'Analyse mislukt');
       }
-      await loadData();
+      // Update local state instead of full reload
+      const result = await response.json();
+      if (result.ai_analysis) {
+        try {
+          setAiAnalysis(
+            typeof result.ai_analysis === 'string'
+              ? JSON.parse(result.ai_analysis)
+              : result.ai_analysis
+          );
+        } catch {
+          setAiAnalysis(result.ai_analysis);
+        }
+      }
+      // Silently refresh in background after a delay
+      setTimeout(() => loadData(), 2000);
     } catch (err: any) {
       alert(err.message || 'Analyse mislukt');
     } finally {
@@ -274,7 +289,15 @@ export default function JobDetailPage() {
         date: tomorrow.toISOString().split('T')[0],
       });
       
-      await loadData();
+      // Update conversations locally instead of full reload
+      setConversations(prev => [...prev, result.conversation || {
+        id: result.conversation?.id,
+        candidate_id: conversationModal.candidate!.id,
+        job_id: job.id,
+        title: conversationForm.title,
+        summary: conversationForm.summary,
+        created_at: new Date().toISOString()
+      }]);
     } catch (error: any) {
       alert(error.message || 'Opslaan mislukt');
     } finally {
@@ -334,8 +357,8 @@ export default function JobDetailPage() {
         notes: '',
       });
       
-      // Reload data to show the new appointment
-      await loadData();
+      // Update local state - no reload needed
+      // The auto-refresh will pick up the new appointment
     } catch (error: any) {
       alert(`Fout bij plannen: ${error.message || 'Onbekende fout'}`);
     } finally {
@@ -438,24 +461,36 @@ export default function JobDetailPage() {
     }
     
     try {
+      const { getAuthHeaders } = await import('../../../../lib/auth');
+      const headers = getAuthHeaders();
+      
       // Update candidate pipeline stage in backend
       const response = await fetch(`/api/candidates/${candidate.id}/pipeline`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          ...headers,
+          'Content-Type': 'application/json'
+        },
         body: JSON.stringify({ pipeline_stage: targetStage })
       });
       
       if (!response.ok) {
-        throw new Error('Failed to update candidate pipeline stage');
+        const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+        throw new Error(errorData.error || errorData.detail || 'Failed to update candidate pipeline stage');
       }
       
-      // Update local state
+      const result = await response.json();
+      
+      // Update local state immediately (optimistic update)
       setCandidates(prev => prev.map(c => 
         c.id === candidate.id ? { ...c, pipeline_stage: targetStage } : c
       ));
-    } catch (error) {
+      
+      // Don't reload immediately - let the auto-refresh handle it, or reload silently in background
+      // This prevents the page from jumping/reloading when dragging
+    } catch (error: any) {
       console.error('Error updating candidate pipeline:', error);
-      alert('Kon kandidaat pipeline stage niet bijwerken. Probeer het opnieuw.');
+      alert(`Kon kandidaat pipeline stage niet bijwerken: ${error.message || 'Onbekende fout'}. Probeer het opnieuw.`);
     } finally {
       setDraggedCandidateId(null);
     }
@@ -542,24 +577,64 @@ export default function JobDetailPage() {
       <div className="p-4 md:p-8 transition-all duration-300" style={{ marginLeft: 'var(--nav-width, 16rem)' }}>
         <div className="max-w-7xl mx-auto">
           <div className="mb-6">
-            <button
-              onClick={() => router.push('/company/dashboard?module=vacatures')}
-              className="text-barnes-violet hover:text-barnes-dark-violet flex items-center gap-2 mb-2 text-sm"
-            >
-              <span>←</span>
-              <span>Terug naar vacatures</span>
-            </button>
+            <div className="flex items-center justify-between mb-4">
+              <button
+                onClick={() => router.push('/company/dashboard?module=vacatures')}
+                className="text-barnes-violet hover:text-barnes-dark-violet flex items-center gap-2 text-sm"
+              >
+                <span>←</span>
+                <span>Terug naar vacatures</span>
+              </button>
+              <div className="flex gap-2">
+                <button
+                  onClick={(e) => {
+                    e.preventDefault();
+                    // Show job posting preview in a modal
+                    setShowJobPreview(true);
+                  }}
+                  className="px-4 py-2 bg-barnes-violet text-white rounded-lg hover:bg-barnes-dark-violet transition-colors text-sm font-medium flex items-center gap-2"
+                >
+                  <span>👁️</span>
+                  <span>Bekijk Vacature</span>
+                </button>
+              </div>
+            </div>
             <h1 className="text-3xl font-bold text-barnes-dark-violet">{job.title}</h1>
             <p className="text-sm text-barnes-dark-gray">
               {job.company} • {job.location || 'Locatie onbekend'}
             </p>
           </div>
 
+          {/* Status Overview - Quick View */}
+          <div className="bg-white rounded-xl border border-gray-200 p-4 mb-6">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div className="text-center">
+                <div className="text-2xl font-bold text-barnes-dark-violet">{candidates.length}</div>
+                <div className="text-xs text-barnes-dark-gray">Totaal Kandidaten</div>
+              </div>
+              <div className="text-center">
+                <div className="text-2xl font-bold text-barnes-violet">{evaluations.length}</div>
+                <div className="text-xs text-barnes-dark-gray">AI Evaluaties</div>
+              </div>
+              <div className="text-center">
+                <div className="text-2xl font-bold text-barnes-orange">{candidates.filter(c => getCandidateStage(c) === 'first_interview' || getCandidateStage(c) === 'second_interview' || getCandidateStage(c) === 'offer').length}</div>
+                <div className="text-xs text-barnes-dark-gray">In Gesprek</div>
+              </div>
+              <div className="text-center">
+                <div className="text-2xl font-bold text-green-600">{candidates.filter(c => c.pipeline_status === 'accepted' || getCandidateStage(c) === 'complete').length}</div>
+                <div className="text-xs text-barnes-dark-gray">Voltooid</div>
+              </div>
+            </div>
+          </div>
+
           {/* Navigation Tabs */}
           <div className="bg-white rounded-xl border border-gray-200 mb-6">
             <div className="flex border-b border-gray-200">
               <button
-                onClick={() => setActiveTab('overview')}
+                onClick={(e) => {
+                  e.preventDefault();
+                  setActiveTab('overview');
+                }}
                 className={`px-6 py-3 text-sm font-medium transition-colors ${
                   activeTab === 'overview'
                     ? 'text-barnes-violet border-b-2 border-barnes-violet'
@@ -569,7 +644,10 @@ export default function JobDetailPage() {
                 Overzicht
               </button>
               <button
-                onClick={() => setActiveTab('analysis')}
+                onClick={(e) => {
+                  e.preventDefault();
+                  setActiveTab('analysis');
+                }}
                 className={`px-6 py-3 text-sm font-medium transition-colors ${
                   activeTab === 'analysis'
                     ? 'text-barnes-violet border-b-2 border-barnes-violet'
@@ -579,7 +657,10 @@ export default function JobDetailPage() {
                 AI Vacature Analyse
               </button>
               <button
-                onClick={() => setActiveTab('candidates')}
+                onClick={(e) => {
+                  e.preventDefault();
+                  setActiveTab('candidates');
+                }}
                 className={`px-6 py-3 text-sm font-medium transition-colors ${
                   activeTab === 'candidates'
                     ? 'text-barnes-violet border-b-2 border-barnes-violet'
@@ -589,7 +670,10 @@ export default function JobDetailPage() {
                 Kandidaten ({candidates.length})
               </button>
               <button
-                onClick={() => setActiveTab('results')}
+                onClick={(e) => {
+                  e.preventDefault();
+                  setActiveTab('results');
+                }}
                 className={`px-6 py-3 text-sm font-medium transition-colors ${
                   activeTab === 'results'
                     ? 'text-barnes-violet border-b-2 border-barnes-violet'
@@ -599,7 +683,8 @@ export default function JobDetailPage() {
                 Resultaten ({results.length})
               </button>
               <button
-                onClick={() => {
+                onClick={(e) => {
+                  e.preventDefault();
                   setActiveTab('compare');
                   setSelectedCandidatesForCompare([]);
                 }}
@@ -634,21 +719,64 @@ export default function JobDetailPage() {
                   </div>
                 </div>
                 
-                {/* Progress Bar - More Prominent */}
+                {/* Progress Bar - Shows average progress through pipeline */}
                 <div className="mb-8 bg-white/50 rounded-xl p-4">
                   <div className="flex items-center justify-between mb-3">
                     <span className="text-base font-semibold text-barnes-dark-violet">Pipeline Voortgang</span>
                     <span className="text-lg font-bold text-barnes-dark-violet">
-                      {Object.values(candidateStages).reduce((sum, stage) => sum + stage.length, 0)} / {candidates.length}
+                      {(() => {
+                        // Calculate average stage position (0-100%)
+                        const stageWeights: Record<string, number> = {
+                          'introduced': 0,
+                          'review': 16.67,
+                          'first_interview': 33.33,
+                          'second_interview': 50,
+                          'offer': 66.67,
+                          'complete': 100
+                        };
+                        if (candidates.length === 0) return '0%';
+                        const totalProgress = candidates.reduce((sum, c) => {
+                          const stage = getCandidateStage(c);
+                          return sum + (stageWeights[stage] || 0);
+                        }, 0);
+                        const avgProgress = totalProgress / candidates.length;
+                        return `${Math.round(avgProgress)}%`;
+                      })()}
                     </span>
                   </div>
                   <div className="w-full bg-gray-200 rounded-full h-4 overflow-hidden shadow-inner">
                     <div 
                       className="bg-gradient-to-r from-barnes-violet via-purple-500 to-purple-600 h-4 rounded-full transition-all duration-500 shadow-md"
                       style={{ 
-                        width: `${(candidates.length > 0 ? (candidateStages.complete.length / candidates.length) * 100 : 0)}%` 
+                        width: `${(() => {
+                          const stageWeights: Record<string, number> = {
+                            'introduced': 0,
+                            'review': 16.67,
+                            'first_interview': 33.33,
+                            'second_interview': 50,
+                            'offer': 66.67,
+                            'complete': 100
+                          };
+                          if (candidates.length === 0) return 0;
+                          const totalProgress = candidates.reduce((sum, c) => {
+                            const stage = getCandidateStage(c);
+                            return sum + (stageWeights[stage] || 0);
+                          }, 0);
+                          return totalProgress / candidates.length;
+                        })()}%` 
                       }}
                     />
+                  </div>
+                  <div className="mt-2 text-xs text-barnes-dark-gray">
+                    Gemiddelde voortgang: {candidates.length > 0 ? Math.round(
+                      candidates.reduce((sum, c) => {
+                        const stageWeights: Record<string, number> = {
+                          'introduced': 0, 'review': 16.67, 'first_interview': 33.33,
+                          'second_interview': 50, 'offer': 66.67, 'complete': 100
+                        };
+                        return sum + (stageWeights[getCandidateStage(c)] || 0);
+                      }, 0) / candidates.length
+                    ) : 0}% door het proces
                   </div>
                 </div>
                 
@@ -673,6 +801,20 @@ export default function JobDetailPage() {
                       >
                         <h3 className="text-base font-bold mb-2">{stageConfig.title}</h3>
                         <p className="text-xs opacity-80 mb-3">{stageConfig.description}</p>
+                        
+                        {/* Show who is responsible for this stage */}
+                        <div className="mb-3 p-2 rounded bg-gray-50 border border-gray-200">
+                          <p className="text-xs font-medium text-gray-700 mb-1">Verantwoordelijk:</p>
+                          <p className="text-xs text-gray-600">
+                            {key === 'introduced' ? 'Bedrijf' :
+                             key === 'review' ? 'Recruiter' :
+                             key === 'first_interview' ? 'AI Systeem' :
+                             key === 'second_interview' ? 'Bedrijf (Interviewer)' :
+                             key === 'offer' ? 'Bedrijf (HR/Manager)' :
+                             'Bedrijf'}
+                          </p>
+                        </div>
+                        
                         {showVacatureStatus && (
                           <div className="mb-3 p-2 rounded bg-white/80 border border-gray-200">
                             {isVacatureSentToRecruiters ? (
@@ -688,12 +830,12 @@ export default function JobDetailPage() {
                             )}
                           </div>
                         )}
-                        <div className="flex items-center justify-between mb-3">
-                          <p className="text-sm font-semibold">{stageCandidates.length} kandidaat{stageCandidates.length !== 1 ? 'en' : ''}</p>
-                          {stageCandidates.length > 0 && (
+                        {stageCandidates.length > 0 && (
+                          <div className="flex items-center justify-between mb-3">
+                            <p className="text-sm font-semibold">{stageCandidates.length} kandidaat{stageCandidates.length !== 1 ? 'en' : ''}</p>
                             <span className="w-2 h-2 rounded-full bg-green-500"></span>
-                          )}
-                        </div>
+                          </div>
+                        )}
                         <div className="space-y-2 max-h-64 overflow-y-auto">
                           {stageCandidates.map(candidate => (
                             <div
@@ -707,29 +849,40 @@ export default function JobDetailPage() {
                             >
                               <div
                                 className="cursor-pointer mb-1.5"
-                                onClick={() => router.push(`/company/kandidaten/${candidate.id}`)}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  router.push(`/company/kandidaten/${candidate.id}`);
+                                }}
                               >
                                 <p className="text-xs font-medium text-barnes-dark-violet truncate">{candidate.name}</p>
                                 <p className="text-[10px] text-barnes-dark-gray truncate">{candidate.email}</p>
+                                {/* Show candidate status */}
+                                {candidate.pipeline_status && (
+                                  <div className="mt-1">
+                                    <span className={`text-[9px] px-1.5 py-0.5 rounded ${
+                                      candidate.pipeline_status === 'active' ? 'bg-green-100 text-green-700' :
+                                      candidate.pipeline_status === 'rejected' ? 'bg-red-100 text-red-700' :
+                                      candidate.pipeline_status === 'on_hold' ? 'bg-yellow-100 text-yellow-700' :
+                                      'bg-gray-100 text-gray-700'
+                                    }`}>
+                                      {candidate.pipeline_status === 'active' ? 'Actief' :
+                                       candidate.pipeline_status === 'rejected' ? 'Afgewezen' :
+                                       candidate.pipeline_status === 'on_hold' ? 'On Hold' :
+                                       candidate.pipeline_status}
+                                    </span>
+                                  </div>
+                                )}
                               </div>
                               <div className="flex gap-1 mt-1.5">
                                 <button
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    openConversationModal(candidate);
-                                  }}
-                                  className="flex-1 px-1.5 py-0.5 text-[10px] border border-barnes-violet text-barnes-violet rounded hover:bg-barnes-violet hover:text-white transition-colors"
-                                >
-                                  Gesprek
-                                </button>
-                                <button
-                                  onClick={(e) => {
-                                    e.stopPropagation();
+                                    e.preventDefault();
                                     router.push(`/company/dashboard?module=dashboard&candidateId=${candidate.id}&jobId=${jobId}`);
                                   }}
                                   className="flex-1 px-1.5 py-0.5 text-[10px] border border-barnes-orange text-barnes-orange rounded hover:bg-barnes-orange hover:text-white transition-colors"
                                 >
-                                  Eval.
+                                  AI Analyse
                                 </button>
                               </div>
                             </div>
@@ -748,11 +901,9 @@ export default function JobDetailPage() {
 
               {/* Workflow Visualization - Made Less Visible (Collapsible) */}
               <details className="bg-white/50 rounded-xl border border-gray-200 p-4">
-                <summary className="cursor-pointer text-sm font-medium text-barnes-dark-gray hover:text-barnes-violet list-none">
-                  <div className="flex items-center justify-between">
-                    <span>Uitgebreide Voortgang (klik om uit te klappen)</span>
-                    <span className="text-xs">▼</span>
-                  </div>
+                <summary className="cursor-pointer text-sm font-medium text-barnes-dark-gray hover:text-barnes-violet list-none flex items-center justify-between">
+                  <span>Uitgebreide Voortgang (klik om uit te klappen)</span>
+                  <span className="text-xs ml-2">▼</span>
                 </summary>
                 <div className="mt-4">
                   <VacancyWorkflowVisualization
@@ -1412,6 +1563,59 @@ export default function JobDetailPage() {
                   >
                     {isSavingSchedule ? 'Plannen...' : 'Plan afspraak'}
                   </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Job Preview Modal */}
+          {showJobPreview && job && (
+            <div
+              className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4"
+              onClick={(e) => {
+                if (e.target === e.currentTarget) setShowJobPreview(false);
+              }}
+            >
+              <div className="bg-white rounded-2xl max-w-4xl w-full max-h-[90vh] overflow-y-auto p-6">
+                <div className="flex items-center justify-between mb-6">
+                  <h2 className="text-2xl font-bold text-barnes-dark-violet">Vacature Preview</h2>
+                  <button
+                    onClick={() => setShowJobPreview(false)}
+                    className="text-gray-500 hover:text-gray-700 text-2xl"
+                  >
+                    ✕
+                  </button>
+                </div>
+                
+                <div className="space-y-6">
+                  <div>
+                    <h1 className="text-3xl font-bold text-barnes-dark-violet mb-2">{job.title}</h1>
+                    <div className="flex items-center gap-4 text-barnes-dark-gray">
+                      <span className="font-medium">{job.company}</span>
+                      {job.location && <span>• {job.location}</span>}
+                      {job.salary_range && <span>• {job.salary_range}</span>}
+                    </div>
+                  </div>
+                  
+                  {job.description && (
+                    <div>
+                      <h3 className="text-lg font-semibold text-barnes-dark-violet mb-2">Beschrijving</h3>
+                      <div className="text-barnes-dark-gray whitespace-pre-wrap">{job.description}</div>
+                    </div>
+                  )}
+                  
+                  {job.requirements && (
+                    <div>
+                      <h3 className="text-lg font-semibold text-barnes-dark-violet mb-2">Vereisten</h3>
+                      <div className="text-barnes-dark-gray whitespace-pre-wrap">{job.requirements}</div>
+                    </div>
+                  )}
+                  
+                  <div className="pt-4 border-t border-gray-200">
+                    <p className="text-sm text-barnes-dark-gray">
+                      Dit is hoe de vacature verschijnt op de website. Gebruik de bewerkfunctie om wijzigingen aan te brengen.
+                    </p>
+                  </div>
                 </div>
               </div>
             </div>

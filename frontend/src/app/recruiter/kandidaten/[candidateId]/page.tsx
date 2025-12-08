@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import ProtectedRoute from '../../../../components/ProtectedRoute';
 import { getAuthHeaders, getAuthHeadersForFormData } from '../../../../lib/auth';
 import Link from 'next/link';
@@ -38,10 +38,19 @@ interface Candidate {
   skill_tags?: string[] | string | null;
 }
 
+interface Vacancy {
+  id: string;
+  title: string;
+  company: string;
+  is_new?: boolean;
+}
+
 export default function RecruiterCandidateDetail() {
   const params = useParams();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const candidateId = params?.candidateId as string;
+  const showAssign = searchParams?.get('assign') === 'true';
   
   const [candidate, setCandidate] = useState<Candidate | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -50,12 +59,109 @@ export default function RecruiterCandidateDetail() {
   const [isSavingNote, setIsSavingNote] = useState(false);
   const [isUploadingResume, setIsUploadingResume] = useState(false);
   const [isUploadingMotivation, setIsUploadingMotivation] = useState(false);
+  const [vacancies, setVacancies] = useState<Vacancy[]>([]);
+  const [selectedVacancyId, setSelectedVacancyId] = useState<string>('');
+  const [isAssigning, setIsAssigning] = useState(false);
 
   useEffect(() => {
     if (candidateId) {
       loadCandidate();
+      loadVacancies();
     }
   }, [candidateId]);
+
+  useEffect(() => {
+    if (candidate && showAssign) {
+      // Auto-scroll to assignment section if assign=true in URL
+      setTimeout(() => {
+        const assignSection = document.getElementById('vacancy-assignment');
+        if (assignSection) {
+          assignSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      }, 500);
+    }
+  }, [candidate, showAssign]);
+
+  const loadVacancies = async () => {
+    try {
+      const headers = getAuthHeaders();
+      const response = await fetch('/api/recruiter/vacancies?include_new=true', { headers });
+      if (response.ok) {
+        const data = await response.json();
+        setVacancies(data.vacancies || []);
+      }
+    } catch (error: any) {
+      console.error('Error loading vacancies:', error);
+    }
+  };
+
+  const handleAssignToVacancy = async () => {
+    if (!selectedVacancyId || !candidate) {
+      alert('Selecteer een vacature');
+      return;
+    }
+
+    setIsAssigning(true);
+    try {
+      const headers = getAuthHeaders();
+      const response = await fetch(`/api/candidates/${candidateId}`, {
+        method: 'PUT',
+        headers: {
+          ...headers,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          job_id: selectedVacancyId,
+        }),
+      });
+
+      if (response.ok) {
+        await loadCandidate();
+        setSelectedVacancyId('');
+        alert('Kandidaat succesvol gekoppeld aan vacature!');
+        // Remove assign param from URL
+        router.replace(`/recruiter/kandidaten/${candidateId}`);
+      } else {
+        const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+        alert(`Fout bij koppelen: ${errorData.error || 'Onbekende fout'}`);
+      }
+    } catch (error: any) {
+      console.error('Error assigning candidate:', error);
+      alert(`Fout bij koppelen: ${error.message || 'Onbekende fout'}`);
+    } finally {
+      setIsAssigning(false);
+    }
+  };
+
+  const handleUnassignFromVacancy = async () => {
+    if (!candidate || !candidate.job_id) return;
+    if (!confirm('Weet je zeker dat je deze kandidaat wilt ontkoppelen van de vacature?')) return;
+
+    try {
+      const headers = getAuthHeaders();
+      const response = await fetch(`/api/candidates/${candidateId}`, {
+        method: 'PUT',
+        headers: {
+          ...headers,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          job_id: null,
+        }),
+      });
+
+      if (response.ok) {
+        await loadCandidate();
+        alert('Kandidaat succesvol ontkoppeld van vacature');
+      } else {
+        const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+        alert(`Fout bij ontkoppelen: ${errorData.error || 'Onbekende fout'}`);
+      }
+    } catch (error: any) {
+      console.error('Error unassigning candidate:', error);
+      alert(`Fout bij ontkoppelen: ${error.message || 'Onbekende fout'}`);
+    }
+  };
 
   const loadCandidate = async () => {
     try {
@@ -309,6 +415,85 @@ export default function RecruiterCandidateDetail() {
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             {/* Main Content */}
             <div className="lg:col-span-2 space-y-6">
+              {/* Vacancy Assignment Section - Prominent */}
+              <div id="vacancy-assignment" className={`bg-white rounded-lg shadow-sm border-2 ${showAssign || !candidate.job_id ? 'border-blue-400' : 'border-gray-200'} p-6`}>
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-xl font-semibold text-barnes-dark-violet">
+                    Vacature Koppeling
+                  </h2>
+                  {candidate.job_id && (
+                    <button
+                      onClick={handleUnassignFromVacancy}
+                      className="text-sm text-red-600 hover:text-red-800 hover:underline"
+                    >
+                      Ontkoppel
+                    </button>
+                  )}
+                </div>
+                
+                {candidate.job ? (
+                  <div className="p-4 bg-green-50 border border-green-200 rounded-lg">
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="text-green-600">✓</span>
+                      <span className="font-medium text-green-800">Gekoppeld aan vacature</span>
+                    </div>
+                    <div className="text-lg font-semibold text-barnes-dark-violet">{candidate.job.title}</div>
+                    <div className="text-sm text-gray-600">{candidate.job.company}</div>
+                    {candidate.job.location && (
+                      <div className="text-xs text-gray-500 mt-1">📍 {candidate.job.location}</div>
+                    )}
+                    <div className="mt-3">
+                      <Link
+                        href={`/recruiter/vacatures/${candidate.job.id}`}
+                        className="text-sm text-barnes-violet hover:underline"
+                      >
+                        Bekijk vacature details →
+                      </Link>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    <div className="p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+                      <div className="flex items-center gap-2 mb-2">
+                        <span className="text-yellow-600">⚠</span>
+                        <span className="font-medium text-yellow-800">Nog niet gekoppeld aan een vacature</span>
+                      </div>
+                      <p className="text-sm text-gray-600">
+                        Koppel deze kandidaat aan een vacature om hem beschikbaar te maken voor het bedrijf.
+                      </p>
+                    </div>
+                    
+                    <div>
+                      <label className="block text-sm font-medium text-barnes-dark-violet mb-2">
+                        Selecteer vacature
+                      </label>
+                      <select
+                        value={selectedVacancyId}
+                        onChange={(e) => setSelectedVacancyId(e.target.value)}
+                        className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-barnes-violet"
+                      >
+                        <option value="">-- Selecteer een vacature --</option>
+                        {vacancies.map((vacancy) => (
+                          <option key={vacancy.id} value={vacancy.id}>
+                            {vacancy.title} - {vacancy.company} {vacancy.is_new && '(Nieuw)'}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    
+                    {selectedVacancyId && (
+                      <button
+                        onClick={handleAssignToVacancy}
+                        disabled={isAssigning}
+                        className="w-full px-4 py-3 bg-barnes-violet text-white rounded-lg hover:bg-barnes-dark-violet transition-colors disabled:opacity-50 disabled:cursor-not-allowed font-medium"
+                      >
+                        {isAssigning ? 'Koppelen...' : 'Koppel aan Vacature'}
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+
               {/* Pipeline Status */}
               <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
                 <h2 className="text-xl font-semibold text-barnes-dark-violet mb-4">
@@ -336,12 +521,6 @@ export default function RecruiterCandidateDetail() {
                     </div>
                   </div>
                 </div>
-                {candidate.job_title && (
-                  <div className="mt-4">
-                    <label className="text-sm text-barnes-dark-gray">Vacature</label>
-                    <div className="mt-1 font-medium">{candidate.job_title}</div>
-                  </div>
-                )}
               </div>
 
               <div className="grid grid-cols-1 gap-6">

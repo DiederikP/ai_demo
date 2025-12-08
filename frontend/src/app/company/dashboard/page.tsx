@@ -4,6 +4,7 @@ import { useState, useEffect, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import ProtectedRoute from '../../../components/ProtectedRoute';
 import CompanyNavigation from '../../../components/CompanyNavigation';
+import CompanyHome from '../../../components/CompanyHome';
 import CompanyDashboard from '../../../components/CompanyDashboard';
 import CompanyVacatures from '../../../components/CompanyVacatures';
 import CompanyPersonas from '../../../components/CompanyPersonas';
@@ -11,15 +12,15 @@ import CompanyKandidaten from '../../../components/CompanyKandidaten';
 import CompanyResults from '../../../components/CompanyResults';
 import CompanyNotifications from '../../../components/CompanyNotifications';
 
-type Module = 'dashboard' | 'vacatures' | 'personas' | 'kandidaten' | 'resultaten' | 'notifications' | 'overview';
+type Module = 'home' | 'dashboard' | 'vacatures' | 'personas' | 'kandidaten' | 'resultaten' | 'notifications' | 'overview';
 
 function CompanyDashboardContent() {
   const searchParams = useSearchParams();
-  const [activeModule, setActiveModule] = useState<Module>('dashboard');
+  const [activeModule, setActiveModule] = useState<Module>('home');
 
   useEffect(() => {
     const module = searchParams.get('module');
-    if (module && ['dashboard', 'vacatures', 'personas', 'kandidaten', 'resultaten', 'notifications', 'overview'].includes(module)) {
+    if (module && ['home', 'dashboard', 'vacatures', 'personas', 'kandidaten', 'resultaten', 'notifications', 'overview'].includes(module)) {
       setActiveModule(module as Module);
     }
     // If refresh parameter is present, trigger refresh
@@ -48,6 +49,8 @@ function CompanyDashboardContent() {
 
   const renderModule = () => {
     switch (activeModule) {
+      case 'home':
+        return <CompanyHome />;
       case 'dashboard':
         return <CompanyDashboard />;
       case 'vacatures':
@@ -62,7 +65,7 @@ function CompanyDashboardContent() {
       case 'notifications':
         return <CompanyNotifications />;
       default:
-        return <CompanyDashboard />;
+        return <CompanyHome />;
     }
   };
 

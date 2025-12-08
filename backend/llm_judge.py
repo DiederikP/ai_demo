@@ -202,6 +202,83 @@ class LLMJudge:
             }
         }
     
+    def evaluate_guardrails(self, output: str, input_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Evaluate if the output adheres to the guardrails set for evaluations"""
+        guardrail_checks = {
+            'focuses_on_vacancy_match': True,
+            'uses_only_available_info': True,
+            'no_fabricated_info': True,
+            'relevant_to_specific_vacancy': True,
+            'issues_found': []
+        }
+        
+        output_lower = output.lower()
+        
+        # Check for signs of general/irrelevant information
+        general_indicators = [
+            'algemene', 'in het algemeen', 'over het algemeen',
+            'meestal', 'typisch', 'vaak', 'soms',
+            'geen specifieke', 'niet specifiek voor deze'
+        ]
+        
+        for indicator in general_indicators:
+            if indicator in output_lower:
+                guardrail_checks['focuses_on_vacancy_match'] = False
+                guardrail_checks['issues_found'].append(f"Bevat algemene informatie: '{indicator}'")
+                break
+        
+        # Check for signs of fabricated information
+        fabrication_indicators = [
+            'waarschijnlijk', 'vermoedelijk', 'mogelijk heeft',
+            'lijkt erop dat', 'kan zijn dat', 'zou kunnen',
+            'gebaseerd op aannames', 'aangenomen dat'
+        ]
+        
+        for indicator in fabrication_indicators:
+            if indicator in output_lower:
+                guardrail_checks['no_fabricated_info'] = False
+                guardrail_checks['issues_found'].append(f"Mogelijk verzonnen informatie: '{indicator}'")
+                break
+        
+        # Check if output mentions missing information (good sign)
+        missing_info_mentions = [
+            'niet beschikbaar', 'ontbreekt', 'niet vermeld',
+            'geen informatie', 'niet opgegeven'
+        ]
+        
+        mentions_missing = any(mention in output_lower for mention in missing_info_mentions)
+        if mentions_missing:
+            guardrail_checks['uses_only_available_info'] = True  # Good - acknowledges missing info
+        
+        # Overall guardrail score
+        guardrail_score = 1.0
+        if not guardrail_checks['focuses_on_vacancy_match']:
+            guardrail_score -= 0.3
+        if not guardrail_checks['no_fabricated_info']:
+            guardrail_score -= 0.4
+        if not guardrail_checks['relevant_to_specific_vacancy']:
+            guardrail_score -= 0.2
+        
+        guardrail_score = max(0.0, min(1.0, guardrail_score))
+        
+        return {
+            'guardrail_score': round(guardrail_score, 2),
+            'checks': guardrail_checks,
+            'summary': self._generate_guardrail_summary(guardrail_checks, guardrail_score)
+        }
+    
+    def _generate_guardrail_summary(self, checks: Dict[str, Any], score: float) -> str:
+        """Generate a human-readable summary of guardrail evaluation"""
+        if score >= 0.9:
+            return "✅ De evaluatie volgt de regels goed. De beoordeling focust op de match tussen kandidaat en vacature en gebruikt alleen beschikbare informatie."
+        elif score >= 0.7:
+            return "⚠️ De evaluatie volgt de regels grotendeels, maar er zijn enkele aandachtspunten. Controleer of alle informatie relevant is voor deze specifieke vacature."
+        elif score >= 0.5:
+            return "⚠️ De evaluatie wijkt af van de regels. Er wordt mogelijk algemene of niet-relevante informatie gebruikt. Heroverweeg de beoordeling."
+        else:
+            issues = ', '.join(checks['issues_found'][:3])  # Limit to first 3 issues
+            return f"❌ De evaluatie volgt de regels niet goed. Problemen: {issues}. De beoordeling moet worden herzien."
+    
     def judge_llm_performance(
         self,
         input_data: Dict[str, Any],
@@ -226,10 +303,16 @@ class LLMJudge:
         # Evaluate output quality
         quality_metrics = self.evaluate_output_quality(output)
         
+        # Evaluate guardrails (new)
+        guardrail_evaluation = self.evaluate_guardrails(output, input_data)
+        
         # Calculate confidence
         confidence = self.calculate_confidence_score(
             output, timing, similar_outputs, quality_metrics
         )
+        
+        # Adjust confidence based on guardrail score
+        adjusted_confidence = confidence['confidence_score'] * 0.7 + guardrail_evaluation['guardrail_score'] * 0.3
         
         # Store evaluation in history
         evaluation = {
@@ -239,6 +322,7 @@ class LLMJudge:
             'output': output[:1000],  # Store first 1000 chars
             'timing': timing,
             'quality_metrics': quality_metrics,
+            'guardrail_evaluation': guardrail_evaluation,
             'confidence': confidence
         }
         
@@ -251,13 +335,16 @@ class LLMJudge:
         return {
             'evaluation_id': len(self.evaluation_history),
             'input_hash': input_hash,
-            'confidence_score': confidence['confidence_score'],
+            'confidence_score': round(adjusted_confidence, 3),
             'quality_score': confidence['quality_score'],
             'consistency_score': confidence['consistency_score'],
             'timing_score': confidence['timing_score'],
+            'guardrail_score': guardrail_evaluation['guardrail_score'],
+            'guardrail_summary': guardrail_evaluation['summary'],
+            'guardrail_issues': guardrail_evaluation['checks']['issues_found'],
             'breakdown': confidence['breakdown'],
             'similar_inputs_found': len(similar_outputs),
-            'recommendations': self._generate_recommendations(confidence, quality_metrics, timing, len(similar_outputs))
+            'recommendations': self._generate_recommendations(confidence, quality_metrics, timing, len(similar_outputs), guardrail_evaluation)
         }
     
     def _generate_recommendations(
@@ -265,7 +352,8 @@ class LLMJudge:
         confidence: Dict[str, Any],
         quality_metrics: Dict[str, float],
         timing: Dict[str, float],
-        similar_inputs_count: int
+        similar_inputs_count: int,
+        guardrail_evaluation: Optional[Dict[str, Any]] = None
     ) -> List[str]:
         """Generate recommendations based on evaluation"""
         recommendations = []
@@ -306,6 +394,20 @@ class LLMJudge:
                 recommendations.append("✅ Hoge consistentie met vergelijkbare inputs")
         else:
             recommendations.append("ℹ️ Geen vergelijkbare inputs gevonden voor consistentie check")
+        
+        # Guardrail recommendations
+        if guardrail_evaluation:
+            guardrail_score = guardrail_evaluation.get('guardrail_score', 1.0)
+            if guardrail_score < 0.5:
+                recommendations.append("⚠️ De evaluatie volgt de regels niet goed - controleer of alleen relevante informatie wordt gebruikt")
+            elif guardrail_score < 0.7:
+                recommendations.append("⚠️ De evaluatie wijkt enigszins af van de regels - controleer op algemene of verzonnen informatie")
+            else:
+                recommendations.append("✅ De evaluatie volgt de regels goed")
+            
+            issues = guardrail_evaluation.get('checks', {}).get('issues_found', [])
+            if issues:
+                recommendations.append(f"📋 Gevonden aandachtspunten: {', '.join(issues[:2])}")  # Show max 2 issues
         
         return recommendations
 

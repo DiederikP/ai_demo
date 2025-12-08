@@ -31,42 +31,11 @@ export default function RecruiterDashboard() {
 
   useEffect(() => {
     loadData();
-    // Auto-refresh every 30 seconds to keep data up to date
+    // Auto-refresh every 60 seconds to keep data up to date (reduced from 30s to prevent flickering)
     const interval = setInterval(() => {
       loadData();
-    }, 30000);
+    }, 60000);
     return () => clearInterval(interval);
-  }, []);
-
-  // Refresh when component becomes visible or URL changes
-  useEffect(() => {
-    const handleFocus = () => {
-      console.log('[RecruiterDashboard] Window focused, refreshing...');
-      loadData();
-    };
-    const handleLocationChange = () => {
-      console.log('[RecruiterDashboard] Location changed, refreshing...');
-      loadData();
-    };
-    const handleVisibilityChange = () => {
-      if (!document.hidden) {
-        console.log('[RecruiterDashboard] Page visible, refreshing...');
-        loadData();
-      }
-    };
-    // Refresh immediately on mount
-    console.log('[RecruiterDashboard] Component mounted, loading data...');
-    loadData();
-    
-    window.addEventListener('focus', handleFocus);
-    window.addEventListener('popstate', handleLocationChange);
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    
-    return () => {
-      window.removeEventListener('focus', handleFocus);
-      window.removeEventListener('popstate', handleLocationChange);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-    };
   }, []);
 
   const loadData = async () => {

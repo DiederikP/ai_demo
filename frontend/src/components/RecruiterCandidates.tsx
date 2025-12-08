@@ -225,6 +225,15 @@ export default function RecruiterCandidates() {
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm">
                     <div className="flex gap-2">
+                      {!candidate.job_id && (
+                        <button
+                          onClick={() => router.push(`/recruiter/kandidaten/${candidate.id}?assign=true`)}
+                          className="px-3 py-1 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors text-sm"
+                          title="Koppel aan vacature"
+                        >
+                          Koppel
+                        </button>
+                      )}
                       <button
                         onClick={() => router.push(`/recruiter/kandidaten/${candidate.id}`)}
                         className="px-3 py-1 bg-barnes-violet text-white rounded-lg hover:bg-barnes-dark-violet transition-colors text-sm"

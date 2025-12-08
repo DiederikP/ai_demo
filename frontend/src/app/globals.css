@@ -9,11 +9,11 @@
   --color-surface: #ffffff;
   --color-primary: #1F7D53;
   --color-primary-dark: #18230F;
-  --color-accent: #ff6b35;
+  --color-accent: #2563eb;
   --color-muted: #64748b;
   --color-light: #ffffff;
-  --color-text: #2d3748;
-  --color-text-light: #4a5568;
+  --color-text: #1e293b;
+  --color-text-light: #475569;
 }
 
 html, body, #__next {
@@ -84,25 +84,79 @@ h4 {
   line-height: 1.4;
 }
 
-/* Barnes brand utilities */
+/* Modern Barnes brand utilities - Professional Business Style */
 .btn-primary {
-  @apply px-6 py-3 rounded-2xl text-white font-medium shadow-lg hover:shadow-xl transition-all duration-200;
+  @apply px-6 py-3 rounded-xl text-white font-medium transition-all duration-300;
   background: var(--color-primary);
+  box-shadow: 0 2px 8px 0 rgba(31, 125, 83, 0.2);
+  position: relative;
+  overflow: hidden;
+}
+
+.btn-primary::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2), transparent);
+  transition: left 0.5s;
+}
+
+.btn-primary:hover::before {
+  left: 100%;
+}
+
+.btn-primary:hover {
+  background: #2a9d6f;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px 0 rgba(31, 125, 83, 0.3);
 }
 
 .btn-secondary {
-  @apply px-6 py-3 rounded-2xl font-medium transition-all duration-200 border;
+  @apply px-6 py-3 rounded-xl font-medium transition-all duration-300 border;
   border-color: var(--color-primary);
   color: var(--color-primary);
+  background: transparent;
+  position: relative;
+  overflow: hidden;
 }
-.btn-secondary:hover {
+
+.btn-secondary::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 100%;
   background: var(--color-primary);
+  transition: width 0.3s ease;
+  z-index: -1;
+}
+
+.btn-secondary:hover::before {
+  width: 100%;
+}
+
+.btn-secondary:hover {
   color: #ffffff;
+  background: var(--color-primary);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px 0 rgba(31, 125, 83, 0.2);
 }
 
 .card {
-  @apply p-6 rounded-2xl border shadow-sm hover:shadow-md transition-all duration-200;
+  @apply p-6 rounded-xl border transition-all duration-300;
   background: var(--color-surface);
+  border-color: rgba(0, 0, 0, 0.08);
+  box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05);
+}
+
+.card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px 0 rgba(0, 0, 0, 0.1);
+  border-color: rgba(31, 125, 83, 0.15);
 }
 
 /* Line clamp utilities */
@@ -139,28 +193,58 @@ h4 {
 }
 
 .barnes-button {
-  @apply px-6 py-3 font-medium rounded-2xl transition-all duration-300;
-  background-color: var(--color-accent);
+  @apply px-6 py-3 font-medium rounded-xl transition-all duration-300;
+  background: var(--color-accent);
   color: #fff;
   font-family: 'Lato', sans-serif;
+  box-shadow: 0 2px 8px 0 rgba(234, 88, 12, 0.2);
+  position: relative;
+  overflow: hidden;
+}
+
+.barnes-button::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2), transparent);
+  transition: left 0.5s;
+}
+
+.barnes-button:hover::before {
+  left: 100%;
 }
 
 .barnes-button:hover {
-  background-color: var(--color-primary);
+  background: #C2410C;
   transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(31, 125, 83, 0.3);
+  box-shadow: 0 4px 12px 0 rgba(234, 88, 12, 0.3);
 }
 
 .barnes-button:disabled {
   @apply bg-gray-400 cursor-not-allowed;
   transform: none;
   box-shadow: none;
+  background: #9ca3af;
+}
+
+.barnes-button:disabled::before {
+  display: none;
 }
 
 .barnes-card {
-  @apply rounded-2xl shadow-lg p-8;
+  @apply rounded-xl p-8 transition-all duration-300;
   background: var(--color-surface);
-  border: 1px solid rgba(31, 125, 83, 0.15);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05);
+}
+
+.barnes-card:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px 0 rgba(0, 0, 0, 0.1);
+  border-color: rgba(31, 125, 83, 0.15);
 }
 
 .barnes-input {
@@ -187,4 +271,87 @@ h4 {
 .focus-visible {
   @apply outline-none ring-2 ring-offset-2;
   --tw-ring-color: var(--color-primary);
+}
+
+/* Modern gradient backgrounds */
+.gradient-primary {
+  background: linear-gradient(135deg, var(--color-primary) 0%, #2a9d6f 100%);
+}
+
+.gradient-accent {
+  background: linear-gradient(135deg, var(--color-accent) 0%, #ff8555 100%);
+}
+
+/* Glassmorphism effect */
+.glass {
+  background: rgba(255, 255, 255, 0.7);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+}
+
+/* Smooth hover lift effect */
+.hover-lift {
+  transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+
+.hover-lift:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.1);
+}
+
+/* Modern card with gradient border */
+.card-gradient {
+  position: relative;
+  background: white;
+  border-radius: 1.5rem;
+  padding: 1.5rem;
+}
+
+.card-gradient::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 1.5rem;
+  padding: 2px;
+  background: linear-gradient(135deg, var(--color-primary), var(--color-accent));
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.card-gradient:hover::before {
+  opacity: 1;
+}
+
+/* Pulse animation for new items */
+@keyframes pulse-glow {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(31, 125, 83, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(31, 125, 83, 0);
+  }
+}
+
+.pulse-glow {
+  animation: pulse-glow 2s infinite;
+}
+
+/* Smooth fade in */
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.fade-in-up {
+  animation: fadeInUp 0.6s ease-out;
 }

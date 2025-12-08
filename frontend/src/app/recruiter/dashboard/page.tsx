@@ -4,25 +4,28 @@ import { useState, useEffect, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import ProtectedRoute from '../../../components/ProtectedRoute';
 import RecruiterNavigation from '../../../components/RecruiterNavigation';
+import RecruiterHome from '../../../components/RecruiterHome';
 import RecruiterDashboard from '../../../components/RecruiterDashboard';
 import RecruiterVacancies from '../../../components/RecruiterVacancies';
 import RecruiterCandidates from '../../../components/RecruiterCandidates';
 
-type Module = 'dashboard' | 'vacatures' | 'kandidaten';
+type Module = 'home' | 'dashboard' | 'vacatures' | 'kandidaten';
 
 function RecruiterDashboardContent() {
   const searchParams = useSearchParams();
-  const [activeModule, setActiveModule] = useState<Module>('dashboard');
+  const [activeModule, setActiveModule] = useState<Module>('home');
 
   useEffect(() => {
     const module = searchParams.get('module');
-    if (module && ['dashboard', 'vacatures', 'kandidaten'].includes(module)) {
+    if (module && ['home', 'dashboard', 'vacatures', 'kandidaten'].includes(module)) {
       setActiveModule(module as Module);
     }
   }, [searchParams]);
 
   const renderModule = () => {
     switch (activeModule) {
+      case 'home':
+        return <RecruiterHome />;
       case 'dashboard':
         return <RecruiterDashboard />;
       case 'vacatures':
@@ -30,7 +33,7 @@ function RecruiterDashboardContent() {
       case 'kandidaten':
         return <RecruiterCandidates />;
       default:
-        return <RecruiterDashboard />;
+        return <RecruiterHome />;
     }
   };
 

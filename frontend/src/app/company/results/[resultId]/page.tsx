@@ -38,17 +38,186 @@ export default function ResultDetailPage() {
   const [personas, setPersonas] = useState<Persona[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'evaluation' | 'debate' | 'judge'>('evaluation');
+  const [approvals, setApprovals] = useState<any[]>([]);
+  const [currentUserApproval, setCurrentUserApproval] = useState<any | null>(null);
+  const [isProcessingDecision, setIsProcessingDecision] = useState(false);
+  const [currentUser, setCurrentUser] = useState<any | null>(null);
 
   useEffect(() => {
     loadResult();
     loadPersonas();
+    loadCurrentUser();
   }, [resultId]);
 
   useEffect(() => {
     if (result) {
       loadRelatedResults();
+      loadApprovals();
     }
   }, [result]);
+
+  useEffect(() => {
+    if (currentUser && approvals.length > 0) {
+      const userApproval = approvals.find(a => a.user_id === currentUser.id);
+      setCurrentUserApproval(userApproval || null);
+    }
+  }, [currentUser, approvals]);
+
+  const loadCurrentUser = async () => {
+    try {
+      const { getAuthHeaders } = await import('../../../../lib/auth');
+      const headers = getAuthHeaders();
+      const response = await fetch('/api/users/me', { headers });
+      if (response.ok) {
+        const data = await response.json();
+        setCurrentUser(data.user || data);
+      }
+    } catch (error) {
+      console.error('Error loading current user:', error);
+    }
+  };
+
+  const loadApprovals = async () => {
+    if (!result) return;
+    try {
+      const { getAuthHeaders } = await import('../../../../lib/auth');
+      const headers = getAuthHeaders();
+      const response = await fetch(
+        `/api/approvals?candidate_id=${result.candidate_id}&job_id=${result.job_id}&approval_type=candidate_proceed`,
+        { headers }
+      );
+      if (response.ok) {
+        const data = await response.json();
+        setApprovals(data.approvals || []);
+      }
+    } catch (error) {
+      console.error('Error loading approvals:', error);
+    }
+  };
+
+  const handleCandidateDecision = async (decision: 'proceed' | 'reject', reason?: string) => {
+    if (!result || !currentUser) {
+      alert('Gebruikersinformatie ontbreekt. Log opnieuw in.');
+      return;
+    }
+
+    if (decision === 'reject' && !confirm('Weet je zeker dat je deze kandidaat wilt afwijzen?')) {
+      return;
+    }
+
+    setIsProcessingDecision(true);
+    try {
+      const { getAuthHeaders } = await import('../../../../lib/auth');
+      const headers = getAuthHeaders();
+      
+      // Create approval record
+      const approvalPayload = {
+        user_id: currentUser.id,
+        candidate_id: result.candidate_id,
+        job_id: result.job_id,
+        result_id: result.id,
+        approval_type: 'candidate_proceed',
+        status: decision === 'proceed' ? 'approved' : 'rejected',
+        comment: reason || undefined
+      };
+
+      const approvalResponse = await fetch('/api/approvals', {
+        method: 'POST',
+        headers: {
+          ...getAuthHeaders(),
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(approvalPayload)
+      });
+
+      if (!approvalResponse.ok) {
+        throw new Error('Kon beslissing niet opslaan');
+      }
+
+      // Check if all required reviewers have made decisions
+      const allApprovalsRes = await fetch(
+        `/api/approvals?candidate_id=${result.candidate_id}&job_id=${result.job_id}&approval_type=candidate_proceed`,
+        { headers }
+      );
+      
+      if (allApprovalsRes.ok) {
+        const allApprovalsData = await allApprovalsRes.json();
+        const allApprovals = allApprovalsData.approvals || [];
+        
+        // Get all company users who should review (for now, all company users)
+        const companyUsersRes = await fetch('/api/users', { headers });
+        let companyUsers: any[] = [];
+        if (companyUsersRes.ok) {
+          const companyUsersData = await companyUsersRes.json();
+          companyUsers = (companyUsersData.users || []).filter((u: any) => 
+            u.company_id === currentUser.company_id && 
+            (u.role === 'admin' || u.role === 'company_admin' || u.role === 'user')
+          );
+        }
+
+        const hasRejection = allApprovals.some((a: any) => a.status === 'rejected');
+        const hasAllApprovals = companyUsers.length > 0 && 
+          companyUsers.every((user: any) => 
+            allApprovals.some((a: any) => a.user_id === user.id && a.status === 'approved')
+          );
+
+        if (hasRejection) {
+          // One person rejected - trigger discussion, don't auto-reject
+          alert('Een andere reviewer heeft deze kandidaat afgewezen. Er is discussie nodig voordat een definitieve beslissing wordt genomen.');
+          // Optionally trigger a debate or discussion
+        } else if (hasAllApprovals && decision === 'proceed') {
+          // All reviewers approved - advance candidate
+          const advanceResponse = await fetch(`/api/candidates/${result.candidate_id}/actions/advance`, {
+            method: 'POST',
+            headers: {
+              ...headers,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ job_id: result.job_id })
+          });
+
+          if (advanceResponse.ok) {
+            alert('✓ Alle reviewers hebben goedgekeurd. Kandidaat wordt doorgestuurd voor gesprek!');
+          } else {
+            alert('✓ Goedgekeurd, maar kon kandidaat niet automatisch doorzetten.');
+          }
+        } else if (decision === 'reject') {
+          // Reject candidate
+          const rejectResponse = await fetch(`/api/candidates/${result.candidate_id}/actions/reject`, {
+            method: 'POST',
+            headers: {
+              ...headers,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ reason: reason || 'Afgewezen door reviewer' })
+          });
+
+          if (rejectResponse.ok) {
+            alert('✓ Kandidaat is afgewezen en verwijderd uit de actieve pipeline.');
+            // Create notification for other users
+            // This will be handled by the backend
+          } else {
+            alert('✓ Afgewezen, maar kon status niet automatisch bijwerken.');
+          }
+        } else {
+          // Decision recorded, waiting for other reviewers
+          const remainingCount = companyUsers.length - allApprovals.length;
+          if (remainingCount > 0) {
+            alert(`✓ Je beslissing is opgeslagen. Wachtend op ${remainingCount} andere reviewer(s).`);
+          } else {
+            alert('✓ Je beslissing is opgeslagen.');
+          }
+        }
+      }
+
+      await loadApprovals();
+    } catch (error: any) {
+      console.error('Error processing decision:', error);
+      alert(`Fout: ${error.message || 'Kon beslissing niet verwerken'}`);
+    } finally {
+      setIsProcessingDecision(false);
+    }
+  };
 
   const loadResult = async () => {
     try {
@@ -329,6 +498,96 @@ export default function ResultDetailPage() {
               </div>
             </div>
           )}
+
+          {/* Decision Actions - Clear Reject/Proceed Buttons */}
+          <div className="bg-white rounded-2xl shadow-lg border-2 border-barnes-violet/30 p-6 mb-8">
+            <h3 className="text-xl font-semibold text-barnes-dark-violet mb-4">Beslissing</h3>
+            <p className="text-sm text-barnes-dark-gray mb-4">
+              Na het bekijken van de AI analyse, maak een beslissing over deze kandidaat.
+            </p>
+            
+            {/* Show current user's decision */}
+            {currentUserApproval && (
+              <div className={`mb-4 p-4 rounded-lg border-2 ${
+                currentUserApproval.status === 'approved' 
+                  ? 'bg-green-50 border-green-300' 
+                  : 'bg-red-50 border-red-300'
+              }`}>
+                <div className="flex items-center gap-2">
+                  <span className="text-lg">
+                    {currentUserApproval.status === 'approved' ? '✓' : '✗'}
+                  </span>
+                  <span className="font-medium">
+                    {currentUserApproval.status === 'approved' 
+                      ? 'Je hebt deze kandidaat goedgekeurd' 
+                      : 'Je hebt deze kandidaat afgewezen'}
+                  </span>
+                </div>
+                {currentUserApproval.comment && (
+                  <p className="text-sm text-gray-600 mt-2">{currentUserApproval.comment}</p>
+                )}
+              </div>
+            )}
+
+            {/* Show other reviewers' decisions */}
+            {approvals.filter(a => a.user_id !== currentUser?.id).length > 0 && (
+              <div className="mb-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
+                <p className="text-sm font-medium text-barnes-dark-violet mb-2">Andere reviewers:</p>
+                <div className="space-y-2">
+                  {approvals.filter(a => a.user_id !== currentUser?.id).map((approval: any) => (
+                    <div key={approval.id} className="flex items-center gap-2 text-sm">
+                      <span className={approval.status === 'approved' ? 'text-green-600' : 'text-red-600'}>
+                        {approval.status === 'approved' ? '✓' : '✗'}
+                      </span>
+                      <span className="text-gray-700">{approval.user_name}</span>
+                      <span className={`px-2 py-0.5 rounded text-xs ${
+                        approval.status === 'approved' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+                      }`}>
+                        {approval.status === 'approved' ? 'Goedgekeurd' : 'Afgewezen'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Action Buttons */}
+            <div className="flex gap-4">
+              <button
+                onClick={() => handleCandidateDecision('proceed')}
+                disabled={isProcessingDecision || currentUserApproval?.status === 'approved'}
+                className={`flex-1 px-6 py-4 rounded-lg font-semibold text-lg transition-all ${
+                  currentUserApproval?.status === 'approved'
+                    ? 'bg-green-100 text-green-700 cursor-not-allowed'
+                    : 'bg-green-600 text-white hover:bg-green-700 disabled:opacity-50'
+                }`}
+              >
+                {currentUserApproval?.status === 'approved' ? '✓ Goedgekeurd' : '✓ Doorgaan'}
+              </button>
+              <button
+                onClick={() => {
+                  const reason = prompt('Reden voor afwijzing (optioneel):');
+                  if (reason !== null) { // User didn't cancel
+                    handleCandidateDecision('reject', reason || undefined);
+                  }
+                }}
+                disabled={isProcessingDecision || currentUserApproval?.status === 'rejected'}
+                className={`flex-1 px-6 py-4 rounded-lg font-semibold text-lg transition-all ${
+                  currentUserApproval?.status === 'rejected'
+                    ? 'bg-red-100 text-red-700 cursor-not-allowed'
+                    : 'bg-red-600 text-white hover:bg-red-700 disabled:opacity-50'
+                }`}
+              >
+                {currentUserApproval?.status === 'rejected' ? '✗ Afgewezen' : '✗ Afwijzen'}
+              </button>
+            </div>
+            
+            <p className="text-xs text-barnes-dark-gray mt-4">
+              {approvals.length > 0 && currentUserApproval 
+                ? 'Je kunt je beslissing wijzigen door opnieuw te klikken.'
+                : 'Als alle reviewers goedkeuren, wordt de kandidaat automatisch doorgestuurd. Als één reviewer afwijst, is er discussie nodig.'}
+            </p>
+          </div>
 
           {/* Individual Evaluations - Enhanced Cards */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

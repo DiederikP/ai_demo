@@ -112,10 +112,24 @@ export async function DELETE(request: NextRequest) {
     });
 
     if (!backendResponse.ok) {
-      const errorText = await backendResponse.text();
-      console.error('Backend delete persona error:', errorText);
+      let errorMessage = 'Failed to delete persona';
+      try {
+        const errorData = await backendResponse.json();
+        errorMessage = errorData.detail || errorData.error || errorMessage;
+      } catch {
+        const errorText = await backendResponse.text();
+        if (errorText) {
+          try {
+            const parsed = JSON.parse(errorText);
+            errorMessage = parsed.detail || parsed.error || errorMessage;
+          } catch {
+            errorMessage = errorText || errorMessage;
+          }
+        }
+      }
+      console.error('Backend delete persona error:', errorMessage);
       return NextResponse.json(
-        { error: 'Failed to delete persona' },
+        { error: errorMessage, detail: errorMessage },
         { status: backendResponse.status }
       );
     }

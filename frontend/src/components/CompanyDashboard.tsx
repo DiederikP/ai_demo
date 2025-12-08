@@ -6,6 +6,7 @@ import ReasoningPanel from './ReasoningPanel';
 import WorkflowVisualizationPopup from './WorkflowVisualizationPopup';
 import { useCompany } from '../contexts/CompanyContext';
 import { getAuthHeaders } from '../lib/auth';
+import { LocationIcon, CurrencyDollarIcon } from './Icons';
 
 interface JobDescription {
   id: string;
@@ -605,13 +606,13 @@ export default function CompanyDashboard() {
             setWorkflowTimingData(processedTiming);
           }
           
-          if (result.debate || result.transcript) {
+          if (result.debate) {
             try {
-              const debateContent = result.debate || result.transcript;
+              const debateContent = result.debate;
               const debateArray = typeof debateContent === 'string' ? JSON.parse(debateContent) : debateContent;
               setWorkflowDebateData(debateArray);
             } catch (e) {
-              setWorkflowDebateData(result.debate || result.transcript);
+              setWorkflowDebateData(result.debate);
             }
           }
         }
@@ -891,8 +892,18 @@ export default function CompanyDashboard() {
                       </div>
                       <p className="text-sm text-gray-600 mb-2">{job.company}</p>
                       <div className="flex items-center gap-4 text-xs text-gray-500">
-                        {job.location && <span>📍 {job.location}</span>}
-                        {job.salary_range && <span>💰 {job.salary_range}</span>}
+                        {job.location && (
+                          <span className="flex items-center gap-1">
+                            <LocationIcon className="w-3 h-3" />
+                            {job.location}
+                          </span>
+                        )}
+                        {job.salary_range && (
+                          <span className="flex items-center gap-1">
+                            <CurrencyDollarIcon className="w-3 h-3" />
+                            {job.salary_range}
+                          </span>
+                        )}
                       </div>
                     </div>
                     <div className="text-right">

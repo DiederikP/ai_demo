@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
+import { CheckIcon, ChatIcon, PhoneIcon, BriefcaseIcon, DocumentTextIcon, BellIcon } from './Icons';
 
 interface Notification {
   id: string;
@@ -147,17 +148,17 @@ export default function NotificationCenter({ userId, isOpen, onClose }: Notifica
   const getTypeIcon = (type: string) => {
     switch (type) {
       case 'evaluation_complete':
-        return '✅';
+        return <CheckIcon className="w-5 h-5 text-green-600" />;
       case 'debate_complete':
-        return '💬';
+        return <ChatIcon className="w-5 h-5 text-barnes-violet" />;
       case 'conversation_added':
-        return '📞';
+        return <PhoneIcon className="w-5 h-5 text-blue-600" />;
       case 'job_created':
-        return '💼';
+        return <BriefcaseIcon className="w-5 h-5 text-barnes-violet" />;
       case 'candidate_update':
-        return '📄';
+        return <DocumentTextIcon className="w-5 h-5 text-barnes-dark-gray" />;
       default:
-        return '🔔';
+        return <BellIcon className="w-5 h-5 text-barnes-dark-gray" />;
     }
   };
 
@@ -301,7 +302,9 @@ export default function NotificationCenter({ userId, isOpen, onClose }: Notifica
                           }`}
                         >
                           <div className="flex items-start gap-3">
-                            <span className="text-2xl">{getTypeIcon(notification.type)}</span>
+                            <div className="flex items-center justify-center w-8 h-8">
+                              {getTypeIcon(notification.type)}
+                            </div>
                             <div className="flex-1 min-w-0">
                               <div className="flex items-center gap-2 mb-1">
                                 <p className="font-medium text-barnes-dark-violet">{notification.title}</p>

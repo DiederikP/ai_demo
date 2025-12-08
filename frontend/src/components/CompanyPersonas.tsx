@@ -13,6 +13,17 @@ interface Persona {
   created_at: string;
 }
 
+interface PersonaTemplate {
+  id: string;
+  name: string;
+  display_name: string;
+  system_prompt: string;
+  personal_criteria: any;
+  description: string;
+  category: string;
+  is_default: boolean;
+}
+
 interface PersonaActivity {
   persona_id: string;
   persona_name: string;
@@ -47,6 +58,9 @@ export default function CompanyPersonas() {
   });
   const [isSavingPersona, setIsSavingPersona] = useState(false);
   const [activeTab, setActiveTab] = useState<'digital' | 'users'>('digital');
+  const [templates, setTemplates] = useState<PersonaTemplate[]>([]);
+  const [selectedTemplate, setSelectedTemplate] = useState<PersonaTemplate | null>(null);
+  const [showTemplateSelection, setShowTemplateSelection] = useState(false);
 
   const getActiveCompanyId = () => {
     if (user?.company_id) return user.company_id;
@@ -59,6 +73,7 @@ export default function CompanyPersonas() {
   useEffect(() => {
     loadPersonas();
     loadUsers();
+    loadTemplates();
   }, [user?.company_id]);
 
   useEffect(() => {
@@ -78,6 +93,18 @@ export default function CompanyPersonas() {
       }
     } catch (error) {
       console.error('Error loading personas:', error);
+    }
+  };
+
+  const loadTemplates = async () => {
+    try {
+      const response = await fetch('/api/persona-templates');
+      if (response.ok) {
+        const data = await response.json();
+        setTemplates(data.templates || []);
+      }
+    } catch (error) {
+      console.error('Error loading templates:', error);
     }
   };
 
@@ -218,6 +245,8 @@ export default function CompanyPersonas() {
         display_name: persona.display_name,
         system_prompt: persona.system_prompt
       });
+      setSelectedTemplate(null);
+      setShowTemplateSelection(false);
     } else {
       setEditingPersona(null);
       setPersonaForm({
@@ -225,13 +254,28 @@ export default function CompanyPersonas() {
         display_name: '',
         system_prompt: ''
       });
+      setSelectedTemplate(null);
+      setShowTemplateSelection(true);
     }
     setIsPersonaModalOpen(true);
+  };
+
+  const selectTemplate = (template: PersonaTemplate) => {
+    setSelectedTemplate(template);
+    setPersonaForm({
+      name: template.name,
+      display_name: template.display_name,
+      system_prompt: template.system_prompt
+    });
+    setShowTemplateSelection(false);
   };
 
   const closePersonaModal = () => {
     setIsPersonaModalOpen(false);
     setEditingPersona(null);
+    setSelectedTemplate(null);
+    setShowTemplateSelection(false);
+    setPersonaForm({ name: '', display_name: '', system_prompt: '' });
   };
 
   const handlePersonaSubmit = async (e: React.FormEvent) => {
@@ -240,6 +284,45 @@ export default function CompanyPersonas() {
     try {
       const currentCompanyId = getActiveCompanyId();
 
+      // If creating from template, use the from-template endpoint
+      if (!editingPersona && selectedTemplate) {
+        const payload = {
+          template_id: selectedTemplate.id,
+          name: personaForm.name,
+          display_name: personaForm.display_name,
+          system_prompt: personaForm.system_prompt,
+          ...(currentCompanyId ? { company_id: currentCompanyId } : {})
+        };
+
+        const headers = getAuthHeaders();
+        const response = await fetch('/api/personas/from-template', {
+          method: 'POST',
+          headers: { 
+            'Content-Type': 'application/json',
+            ...headers
+          },
+          body: JSON.stringify(payload)
+        });
+
+        if (!response.ok) {
+          let errorMessage = 'Opslaan mislukt';
+          try {
+            const errorData = await response.json();
+            errorMessage = errorData.detail || errorData.error || errorMessage;
+          } catch {
+            const errorText = await response.text();
+            if (errorText) errorMessage = errorText;
+          }
+          throw new Error(errorMessage);
+        }
+
+        await loadPersonas();
+        closePersonaModal();
+        setIsSavingPersona(false);
+        return;
+      }
+
+      // Regular create/update
       const payload = {
         ...personaForm,
         ...(editingPersona && { id: editingPersona.id }),
@@ -739,11 +822,15 @@ export default function CompanyPersonas() {
             <div className="p-6 border-b border-gray-200 flex items-center justify-between">
               <div>
                 <h3 className="text-xl font-semibold text-barnes-dark-violet">
-                  {editingPersona ? 'Bewerk Digitale Werknemer' : 'Nieuwe Digitale Werknemer'}
+                  {editingPersona ? 'Bewerk Digitale Werknemer' : showTemplateSelection ? 'Kies een Template' : 'Nieuwe Digitale Werknemer'}
                 </h3>
                 <p className="text-sm text-barnes-dark-gray">
                   {editingPersona
                     ? 'Pas de eigenschappen van deze digitale werknemer aan.'
+                    : showTemplateSelection
+                    ? 'Selecteer een template om te beginnen, of maak een volledig nieuwe digitale werknemer.'
+                    : selectedTemplate
+                    ? `Gebaseerd op template: ${selectedTemplate.display_name}. Pas de tekst aan naar wens.`
                     : 'Definieer een nieuwe digitale werknemer inclusief gedrag en focus.'}
                 </p>
               </div>
@@ -756,8 +843,65 @@ export default function CompanyPersonas() {
               </button>
             </div>
 
-            <form onSubmit={handlePersonaSubmit} className="p-6 space-y-4 overflow-y-auto max-h-[70vh]">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {showTemplateSelection && !editingPersona ? (
+              <div className="p-6 space-y-4 overflow-y-auto max-h-[70vh]">
+                <div className="mb-4">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowTemplateSelection(false);
+                      setSelectedTemplate(null);
+                      setPersonaForm({ name: '', display_name: '', system_prompt: '' });
+                    }}
+                    className="text-sm text-barnes-violet hover:text-barnes-dark-violet mb-4"
+                  >
+                    ← Maak zonder template
+                  </button>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {templates.map((template) => (
+                    <div
+                      key={template.id}
+                      onClick={() => selectTemplate(template)}
+                      className="border-2 border-gray-200 rounded-xl p-4 hover:border-barnes-violet hover:bg-barnes-violet/5 cursor-pointer transition-all"
+                    >
+                      <div className="flex items-start justify-between mb-2">
+                        <h4 className="font-semibold text-barnes-dark-violet">{template.display_name}</h4>
+                        {template.is_default && (
+                          <span className="text-xs bg-barnes-violet/10 text-barnes-violet px-2 py-1 rounded">Standaard</span>
+                        )}
+                      </div>
+                      {template.category && (
+                        <p className="text-xs text-barnes-dark-gray mb-2">{template.category}</p>
+                      )}
+                      {template.description && (
+                        <p className="text-sm text-barnes-dark-gray">{template.description}</p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <form onSubmit={handlePersonaSubmit} className="p-6 space-y-4 overflow-y-auto max-h-[70vh]">
+                {selectedTemplate && !editingPersona && (
+                  <div className="mb-4 p-3 bg-barnes-violet/10 border border-barnes-violet/20 rounded-lg">
+                    <p className="text-sm text-barnes-dark-violet">
+                      <strong>Template:</strong> {selectedTemplate.display_name}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowTemplateSelection(true);
+                        setSelectedTemplate(null);
+                        setPersonaForm({ name: '', display_name: '', system_prompt: '' });
+                      }}
+                      className="text-xs text-barnes-violet hover:text-barnes-dark-violet mt-2"
+                    >
+                      ← Ander template kiezen
+                    </button>
+                  </div>
+                )}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium mb-2 text-barnes-dark-violet">Technische naam *</label>
                   <input
@@ -794,23 +938,24 @@ export default function CompanyPersonas() {
                 />
               </div>
 
-              <div className="flex gap-4 pt-4">
-                <button
-                  type="button"
-                  onClick={closePersonaModal}
-                  className="btn-secondary flex-1"
-                >
-                  Annuleren
-                </button>
-                <button
-                  type="submit"
-                  disabled={isSavingPersona}
-                  className="btn-primary flex-1"
-                >
-                  {isSavingPersona ? 'Opslaan...' : (editingPersona ? 'Bijwerken' : 'Aanmaken')}
-                </button>
-              </div>
-            </form>
+                <div className="flex gap-4 pt-4">
+                  <button
+                    type="button"
+                    onClick={closePersonaModal}
+                    className="btn-secondary flex-1"
+                  >
+                    Annuleren
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isSavingPersona}
+                    className="btn-primary flex-1"
+                  >
+                    {isSavingPersona ? 'Opslaan...' : (editingPersona ? 'Bijwerken' : 'Aanmaken')}
+                  </button>
+                </div>
+              </form>
+            )}
           </div>
         </div>
       )}

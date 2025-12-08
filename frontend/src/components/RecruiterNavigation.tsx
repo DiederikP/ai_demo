@@ -3,10 +3,11 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '../contexts/AuthContext';
+import { HomeIcon, ChartBarIcon, BriefcaseIcon, UsersIcon } from './Icons';
 
 interface RecruiterNavigationProps {
-  activeModule: 'dashboard' | 'vacatures' | 'kandidaten';
-  onModuleChange: (module: 'dashboard' | 'vacatures' | 'kandidaten') => void;
+  activeModule: 'home' | 'dashboard' | 'vacatures' | 'kandidaten';
+  onModuleChange: (module: 'home' | 'dashboard' | 'vacatures' | 'kandidaten') => void;
   onCollapsedChange?: (isCollapsed: boolean) => void;
 }
 
@@ -29,9 +30,10 @@ export default function RecruiterNavigation({ activeModule, onModuleChange, onCo
   };
 
   const navItems = [
-    { id: 'dashboard', label: 'Dashboard', icon: '📊' },
-    { id: 'vacatures', label: 'Mijn Vacatures', icon: '💼' },
-    { id: 'kandidaten', label: 'Mijn Kandidaten', icon: '👥' },
+    { id: 'home', label: 'Home', icon: 'home', IconComponent: HomeIcon },
+    { id: 'dashboard', label: 'Dashboard', icon: 'chart', IconComponent: ChartBarIcon },
+    { id: 'vacatures', label: 'Mijn Vacatures', icon: 'briefcase', IconComponent: BriefcaseIcon },
+    { id: 'kandidaten', label: 'Mijn Kandidaten', icon: 'users', IconComponent: UsersIcon },
   ];
 
   return (
@@ -87,7 +89,7 @@ export default function RecruiterNavigation({ activeModule, onModuleChange, onCo
             <button
               key={item.id}
               onClick={() => {
-                onModuleChange(item.id as 'dashboard' | 'vacatures' | 'kandidaten');
+                onModuleChange(item.id as 'home' | 'dashboard' | 'vacatures' | 'kandidaten');
                 setIsMobileMenuOpen(false);
               }}
               className={`w-full flex items-center gap-3 px-4 py-3 transition-colors ${
@@ -96,7 +98,11 @@ export default function RecruiterNavigation({ activeModule, onModuleChange, onCo
                   : 'text-barnes-dark-gray hover:bg-gray-50'
               }`}
             >
-              <span className="text-xl">{item.icon}</span>
+              {item.IconComponent ? (
+                <item.IconComponent className={`w-5 h-5 ${activeModule === item.id ? 'text-barnes-violet' : 'text-barnes-dark-gray'}`} />
+              ) : (
+                <span className="text-xl">{item.icon}</span>
+              )}
               {!isCollapsed && <span className="font-medium">{item.label}</span>}
             </button>
           ))}

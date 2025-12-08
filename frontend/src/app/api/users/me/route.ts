@@ -2,14 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 
 const BACKEND_URL = process.env.BACKEND_URL || process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
 
-export async function PUT(
-  request: NextRequest,
-  { params }: { params: Promise<{ candidateId: string }> }
-) {
+export async function GET(request: NextRequest) {
   try {
-    const { candidateId } = await params;
-    const body = await request.json();
-    
     // Get authorization header from the incoming request
     const authHeader = request.headers.get('authorization') || request.headers.get('Authorization');
     
@@ -22,33 +16,27 @@ export async function PUT(
       headers['Authorization'] = authHeader;
     }
     
-    const response = await fetch(`${BACKEND_URL}/candidates/${candidateId}/pipeline`, {
-      method: 'PUT',
+    const response = await fetch(`${BACKEND_URL}/users/me`, {
+      method: 'GET',
       headers,
-      body: JSON.stringify(body)
     });
-    
+
     if (!response.ok) {
       const errorText = await response.text();
-      let errorData: any = { error: errorText };
-      try {
-        errorData = JSON.parse(errorText);
-      } catch {
-        // Not JSON, use text as error
-      }
-      console.error('Backend pipeline update error:', errorData);
+      console.error('Backend users/me error:', errorText);
       return NextResponse.json(
-        { error: errorData.error || errorData.detail || errorText || 'Failed to update candidate pipeline' },
+        { error: 'Failed to fetch current user' },
         { status: response.status }
       );
     }
-    
+
     const result = await response.json();
     return NextResponse.json(result);
-  } catch (error: any) {
-    console.error('Error in /api/candidates/[candidateId]/pipeline:', error);
+
+  } catch (error) {
+    console.error('Error in /api/users/me:', error);
     return NextResponse.json(
-      { error: error.message || 'Internal server error' },
+      { error: 'Internal server error' },
       { status: 500 }
     );
   }

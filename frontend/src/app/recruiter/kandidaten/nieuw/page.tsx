@@ -11,6 +11,8 @@ interface Vacancy {
   id: string;
   title: string;
   company: string;
+  is_assigned?: boolean;
+  is_new?: boolean;
 }
 
 export default function RecruiterNewCandidate() {
@@ -56,7 +58,7 @@ export default function RecruiterNewCandidate() {
   const loadVacancies = async () => {
     try {
       const headers = getAuthHeaders();
-      const response = await fetch('/api/recruiter/vacancies', { headers });
+      const response = await fetch('/api/recruiter/vacancies?include_new=true', { headers });
       if (response.ok) {
         const data = await response.json();
         setVacancies(data.vacancies || []);
@@ -268,23 +270,33 @@ export default function RecruiterNewCandidate() {
           )}
 
           <form onSubmit={handleSubmit} className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 space-y-6">
-            {/* Vacancy Selection - Optional (can be assigned later) */}
-            <div>
+            {/* Vacancy Selection - Prominent and Simplified */}
+            <div className="bg-blue-50 border-2 border-blue-200 rounded-lg p-4">
               <label className="block text-sm font-medium text-barnes-dark-violet mb-2">
-                Vacature (optioneel - kan later worden toegewezen)
+                <span className="text-base font-semibold">Vacature Koppeling</span>
+                <span className="text-xs text-gray-500 ml-2 font-normal">(optioneel - kan later worden toegewezen)</span>
               </label>
+              <p className="text-xs text-gray-600 mb-3">
+                Koppel deze kandidaat direct aan een vacature, of laat dit leeg en koppel later via de kandidaatdetailpagina.
+              </p>
               <select
                 value={selectedVacancy}
                 onChange={(e) => setSelectedVacancy(e.target.value)}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-barnes-violet"
+                className="w-full px-4 py-3 border-2 border-blue-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-barnes-violet bg-white font-medium"
               >
-                <option value="">Geen vacature (later toewijzen)</option>
-                {vacancies.map((vacancy) => (
+                <option value="">-- Geen vacature (later toewijzen) --</option>
+                {vacancies.filter(v => !v.is_assigned || v.is_new).map((vacancy) => (
                   <option key={vacancy.id} value={vacancy.id}>
-                    {vacancy.title} - {vacancy.company}
+                    {vacancy.title} - {vacancy.company} {vacancy.is_new && '🆕 Nieuw'}
                   </option>
                 ))}
               </select>
+              {selectedVacancy && (
+                <p className="text-xs text-blue-700 mt-2 flex items-center gap-1">
+                  <span>✓</span>
+                  <span>Kandidaat wordt gekoppeld aan: {vacancies.find(v => v.id === selectedVacancy)?.title}</span>
+                </p>
+              )}
             </div>
 
             {/* CV Upload */}

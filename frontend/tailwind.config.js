@@ -19,13 +19,15 @@ module.exports = {
           700: '#2b7fb4',
           800: '#205a86',
           900: '#173b5a',
-          // Barnes brand colors - using greens for highlights
-          orange: '#FF6B35',
+          // Barnes brand colors - professional business palette
+          orange: '#EA580C',
           violet: '#1F7D53',
           'dark-violet': '#18230F',
-          'orange-red': '#DC2626',
+          'orange-red': '#C2410C',
           'light-gray': '#F8FAFC',
-          'dark-gray': '#64748B'
+          'dark-gray': '#475569',
+          'blue': '#2563EB',
+          'blue-dark': '#1E40AF'
         }
       },
       fontFamily: {
