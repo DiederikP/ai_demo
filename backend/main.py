@@ -704,6 +704,7 @@ def ensure_column_exists(table_name: str, column_name: str, declaration: str):
                 # Use database-agnostic ALTER TABLE
                 connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {declaration}"))
                 connection.commit()
+            print(f"✅ Added column {column_name} to {table_name}")
     except Exception as e:
         # Table might not exist yet, which is fine
         print(f"Note: Could not check columns for {table_name}: {e}")
@@ -737,6 +738,7 @@ SCHEMA_COLUMN_UPDATES = [
     ("candidates", "submitted_by_company_id", "TEXT"),
     ("candidates", "pipeline_stage", "TEXT"),
     ("candidates", "pipeline_status", "TEXT"),
+    ("evaluation_results", "is_archived", "INTEGER DEFAULT 0"),
 ]
 
 _schema_bootstrapped = False
@@ -5851,13 +5853,17 @@ Deze gestructureerde informatie is expliciet opgeslagen voor deze kandidaat. Foc
                             print(f"⚠ Response is JSON but not an array: {type(parsed)}")
                     except json.JSONDecodeError:
                         print(f"⚠ Response is not valid JSON string, first 200 chars: {str(response)[:200]}")
-            except Exception as unpack_error:
-                print(f"Error unpacking debate result: {unpack_error}")
+                    except Exception as unpack_error:
+                        print(f"Error unpacking debate result: {unpack_error}")
+                        traceback.print_exc()
+                        raise HTTPException(status_code=500, detail=f"Failed to process debate result: {str(unpack_error)}")
+                
+                # Build full prompt for display
+                full_prompt_text = f"LANGCHAIN MULTI-AGENT DEBATE SYSTEM\n\nModerator + {len(persona_prompts)} Persona Agents\n\nPersonas: {', '.join(persona_prompts.keys())}\n\nDebate structured with:\n1. Moderator introduction\n2. Initial thoughts from each persona\n3. Multiple rounds of discussion\n4. Final summary from moderator"
+            except Exception as e:
+                print(f"Error processing debate result: {e}")
                 traceback.print_exc()
-                raise HTTPException(status_code=500, detail=f"Failed to process debate result: {str(unpack_error)}")
-            
-            # Build full prompt for display
-            full_prompt_text = f"LANGCHAIN MULTI-AGENT DEBATE SYSTEM\n\nModerator + {len(persona_prompts)} Persona Agents\n\nPersonas: {', '.join(persona_prompts.keys())}\n\nDebate structured with:\n1. Moderator introduction\n2. Initial thoughts from each persona\n3. Multiple rounds of discussion\n4. Final summary from moderator"
+                raise
             
         except ImportError as e:
             print(f"ImportError: {e}")
