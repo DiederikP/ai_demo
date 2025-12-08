@@ -860,10 +860,14 @@ export default function CompanyPersonas() {
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   {templates.map((template) => (
-                    <div
+                    <button
                       key={template.id}
-                      onClick={() => selectTemplate(template)}
-                      className="border-2 border-gray-200 rounded-xl p-4 hover:border-barnes-violet hover:bg-barnes-violet/5 cursor-pointer transition-all"
+                      type="button"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        selectTemplate(template);
+                      }}
+                      className="border-2 border-gray-200 rounded-xl p-4 hover:border-barnes-violet hover:bg-barnes-violet/5 cursor-pointer transition-all text-left w-full"
                     >
                       <div className="flex items-start justify-between mb-2">
                         <h4 className="font-semibold text-barnes-dark-violet">{template.display_name}</h4>
@@ -877,7 +881,7 @@ export default function CompanyPersonas() {
                       {template.description && (
                         <p className="text-sm text-barnes-dark-gray">{template.description}</p>
                       )}
-                    </div>
+                    </button>
                   ))}
                 </div>
               </div>

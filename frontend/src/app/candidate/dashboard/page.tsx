@@ -40,6 +40,7 @@ function CandidateDashboardContent() {
   const [targetedJobs, setTargetedJobs] = useState<TargetedJob[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isAdminView, setIsAdminView] = useState(false);
+  const [isNavCollapsed, setIsNavCollapsed] = useState(false);
 
   const loadApplications = useCallback(async () => {
     try {
@@ -169,8 +170,6 @@ function CandidateDashboardContent() {
     return stageColors[stage] || 'bg-gray-100 text-gray-800';
   };
 
-  const [isNavCollapsed, setIsNavCollapsed] = useState(false);
-
   return (
     <div className="min-h-screen bg-gray-50">
       <CandidateNavigation onCollapsedChange={setIsNavCollapsed} />
@@ -202,9 +201,19 @@ function CandidateDashboardContent() {
             Status van mijn sollicitaties
           </h2>
           {applications.length === 0 ? (
-            <p className="text-barnes-dark-gray">
-              Je hebt nog geen sollicitaties ingediend.
-            </p>
+            <div className="text-center py-8">
+              <p className="text-barnes-dark-gray mb-4">
+                Je hebt nog geen sollicitaties ingediend.
+              </p>
+              <p className="text-sm text-gray-500">
+                {user?.email === 'user@kandidaat.nl' && (
+                  <span className="block mt-2">
+                    💡 <strong>Test modus:</strong> Er zou een test sollicitatie zichtbaar moeten zijn. 
+                    Controleer of de backend draait en of er een kandidaat is aangemaakt met dit email adres.
+                  </span>
+                )}
+              </p>
+            </div>
           ) : (
             <div className="space-y-4">
               {applications.map((app) => (

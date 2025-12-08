@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { getAuthHeaders } from '../lib/auth';
 import { DocumentIcon, UserIcon, CogIcon, ChartBarIcon, InboxIcon, ArrowRightIcon } from './Icons';
+import ReviewCandidates from './ReviewCandidates';
 
 interface JobDescription {
   id: string;
@@ -35,6 +36,7 @@ interface Stats {
 
 export default function CompanyHome() {
   const router = useRouter();
+  const [activeTab, setActiveTab] = useState<'overview' | 'review'>('overview');
   const [jobs, setJobs] = useState<JobDescription[]>([]);
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [stats, setStats] = useState<Stats>({
@@ -120,6 +122,28 @@ export default function CompanyHome() {
     );
   }
 
+  // Show review candidates tab if active
+  if (activeTab === 'review') {
+    return (
+      <div className="max-w-7xl mx-auto">
+        <div className="mb-6">
+          <div className="flex items-center gap-4 mb-4">
+            <button
+              onClick={() => setActiveTab('overview')}
+              className="text-barnes-dark-gray hover:text-barnes-violet transition-colors"
+            >
+              ← Terug naar overzicht
+            </button>
+          </div>
+          <h1 className="text-2xl font-semibold text-barnes-dark-violet mb-2">
+            Bedrijfsportal
+          </h1>
+        </div>
+        <ReviewCandidates />
+      </div>
+    );
+  }
+
   return (
     <div className="max-w-7xl mx-auto">
       {/* Hero Section */}
@@ -130,6 +154,32 @@ export default function CompanyHome() {
         <p className="text-sm text-barnes-dark-gray">
           Overzicht van uw vacatures en kandidaten
         </p>
+      </div>
+
+      {/* Tabs */}
+      <div className="mb-6 border-b border-gray-200">
+        <div className="flex gap-4">
+          <button
+            onClick={() => setActiveTab('overview')}
+            className={`px-4 py-2 font-medium transition-colors border-b-2 ${
+              activeTab === 'overview'
+                ? 'text-barnes-violet border-barnes-violet'
+                : 'text-barnes-dark-gray border-transparent hover:text-barnes-violet'
+            }`}
+          >
+            Overzicht
+          </button>
+          <button
+            onClick={() => setActiveTab('review')}
+            className={`px-4 py-2 font-medium transition-colors border-b-2 ${
+              activeTab === 'review'
+                ? 'text-barnes-violet border-barnes-violet'
+                : 'text-barnes-dark-gray border-transparent hover:text-barnes-violet'
+            }`}
+          >
+            Aangeboden Kandidaat Beoordelen
+          </button>
+        </div>
       </div>
 
       {/* Stats Cards */}
@@ -174,7 +224,7 @@ export default function CompanyHome() {
         </button>
 
         <button
-          onClick={() => router.push('/company/dashboard?module=kandidaten')}
+          onClick={() => setActiveTab('review')}
           className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 hover:border-barnes-violet transition-colors text-left"
         >
           <div className="flex items-center gap-3 mb-2">

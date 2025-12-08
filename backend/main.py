@@ -744,6 +744,110 @@ SCHEMA_COLUMN_UPDATES = [
 
 _schema_bootstrapped = False
 
+def seed_test_candidate_for_portal():
+    """Create a test candidate for the candidate portal (user@kandidaat.nl)"""
+    try:
+        db = SessionLocal()
+        
+        # Find candidate user
+        candidate_user = db.query(UserDB).filter(UserDB.email == "user@kandidaat.nl").first()
+        if not candidate_user:
+            print("⚠ Candidate user (user@kandidaat.nl) not found, skipping test candidate creation")
+            db.close()
+            return
+        
+        # Check if test candidate already exists
+        existing_candidate = db.query(CandidateDB).filter(
+            CandidateDB.email == "user@kandidaat.nl"
+        ).first()
+        
+        if existing_candidate:
+            print(f"✓ Test candidate already exists for user@kandidaat.nl (ID: {existing_candidate.id})")
+            db.close()
+            return
+        
+        # Get or create a test job posting
+        test_job = db.query(JobPostingDB).filter(
+            JobPostingDB.title.ilike("%test%")
+        ).first()
+        
+        if not test_job:
+            # Create a test job if none exists
+            default_company = db.query(CompanyDB).first()
+            test_job = JobPostingDB(
+                title="Test Vacature - Software Developer",
+                company=default_company.name if default_company else "Test Bedrijf",
+                company_id=default_company.id if default_company else None,
+                description="Dit is een test vacature om te zien hoe het kandidaat portal werkt. We zoeken een ervaren software developer met kennis van Python en React.",
+                requirements="Minimaal 3 jaar ervaring met Python en React. Goede communicatieve vaardigheden.",
+                location="Amsterdam",
+                salary_range="€50.000 - €70.000",
+                is_active=True
+            )
+            db.add(test_job)
+            db.commit()
+            db.refresh(test_job)
+            print(f"✓ Created test job: {test_job.title}")
+        
+        # Create test candidate
+        test_candidate = CandidateDB(
+            name="Test Kandidaat",
+            email="user@kandidaat.nl",
+            resume_text="""TEST CV - Test Kandidaat
+
+PERSOONLIJKE GEGEVENS
+Naam: Test Kandidaat
+Email: user@kandidaat.nl
+Telefoon: +31 6 12345678
+Locatie: Amsterdam
+
+WERKERVARING
+Software Developer | Tech Bedrijf | 2020 - Heden
+- Ontwikkeling van web applicaties met Python en React
+- Werken in agile teams
+- Code reviews en mentoring van junior developers
+
+Junior Developer | Startup XYZ | 2018 - 2020
+- Eerste werkervaring in software development
+- Leren van senior developers
+
+OPLEIDING
+Bachelor Informatica | Universiteit van Amsterdam | 2014 - 2018
+
+VAARDIGHEDEN
+- Python (expert)
+- React (gevorderd)
+- JavaScript (gevorderd)
+- SQL (gevorderd)
+- Git (gevorderd)
+
+TALEN
+- Nederlands (moedertaal)
+- Engels (vloeiend)""",
+            job_id=test_job.id,
+            pipeline_stage="review",
+            pipeline_status="active",
+            experience_years=5,
+            skill_tags=json.dumps(["Python", "React", "JavaScript", "SQL", "Git"]),
+            education_level="Bachelor",
+            location="Amsterdam",
+            communication_level="Native"
+        )
+        db.add(test_candidate)
+        db.commit()
+        db.refresh(test_candidate)
+        
+        print(f"✓ Created test candidate for user@kandidaat.nl")
+        print(f"  - Candidate ID: {test_candidate.id}")
+        print(f"  - Job: {test_job.title}")
+        print(f"  - Pipeline Stage: {test_candidate.pipeline_stage}")
+        
+        db.close()
+    except Exception as e:
+        print(f"⚠ Could not seed test candidate: {str(e)}")
+        import traceback
+        traceback.print_exc()
+
 def bootstrap_schema():
     """Ensure all tables/columns exist before the app starts."""
     global _schema_bootstrapped
@@ -759,6 +863,9 @@ def bootstrap_schema():
     assign_users_without_company(default_company_id)
     _schema_bootstrapped = True
     print("✅ Database schema bootstrapped")
+    
+    # Seed test candidate for candidate portal
+    seed_test_candidate_for_portal()
 
 def ensure_default_company() -> Optional[str]:
     db = SessionLocal()
@@ -2379,56 +2486,116 @@ def seed_default_persona_templates():
         
         default_templates = [
             {
-                "name": "finance_director",
-                "display_name": "Finance Director",
-                "system_prompt": "Je bent een Finance Director met jarenlange ervaring in financiële planning, budgettering en kostenbeheersing. Je beoordeelt kandidaten vanuit een financieel perspectief, met focus op salarisverwachtingen, beschikbaarheid en kosten-baten analyse.",
-                "personal_criteria": None,
-                "description": "Beoordeelt kandidaten vanuit financieel perspectief: salarisverwachtingen, beschikbaarheid en kosten-baten analyse.",
-                "category": "Finance",
-                "is_default": True
-            },
-            {
                 "name": "hiring_manager",
                 "display_name": "Hiring Manager",
-                "system_prompt": "Je bent een ervaren Hiring Manager die kandidaten beoordeelt op basis van culture fit, soft skills, en algemene geschiktheid voor de rol. Je let op communicatieve vaardigheden, teamwerk en motivatie.",
+                "system_prompt": """Je bent een Hiring Manager. Je beoordeelt kandidaten op de volgende punten:
+
+Technische omschrijving van de functie
+Verantwoordelijkheden (niveau, zelfstandigheid, leiderschap)
+Relevante ervaring in de sector
+Grootte/omvang van vorige werkgevers
+Duur per werkgever (stabiliteit, groei)
+Jaren relevante werkervaring
+Opleiding en certificaten
+Taalniveaus
+
+Toelichting: overlapping tussen "ervaring", "verantwoordelijkheden" en "technische omschrijving" mag een versterkend effect hebben op de beoordeling van inhoudelijke geschiktheid.
+
+Wees kritisch en grondig in je evaluatie, we zijn vooral op zoek naar hiaten in CV en brief en risico's. Geef een score (1-10), benoem sterke punten, aandachtspunten, en een duidelijk advies.""",
                 "personal_criteria": None,
-                "description": "Beoordeelt kandidaten op culture fit, soft skills, communicatie en teamwerk.",
+                "description": "Beoordeelt kandidaten op technische geschiktheid, ervaring, stabiliteit en risico's.",
                 "category": "HR",
                 "is_default": True
             },
             {
-                "name": "tech_lead",
-                "display_name": "Technical Lead",
-                "system_prompt": "Je bent een Technical Lead met diepgaande technische expertise. Je beoordeelt kandidaten op technische vaardigheden, ervaring met relevante technologieën, probleemoplossend vermogen en technische certificeringen.",
+                "name": "bureaurecruiter",
+                "display_name": "Bureaurecruiter",
+                "system_prompt": """Je bent een Bureaurecruiter. Je beoordeelt de profieltekst, motivatie en sollicitatie-informatie op:
+
+Motivatie voor de organisatie/functie
+Vertrekwens huidige functie
+Wens tot ontwikkeling of groei
+Consistentie met cv
+Beschikbaarheid
+Opzegtermijn
+Salarisindicatie
+Reisafstand
+Werkvoorkeur (kantoor/thuis)
+
+Toelichting: overlapping tussen "motivatie", "vertrekwens" en "ontwikkelwens" mag leiden tot een sterker positief of negatief advies over motivatie en commitment.
+
+Wees kritisch en grondig in je evaluatie. Geef een score (1-10), benoem sterke punten, aandachtspunten, en een duidelijk advies.""",
                 "personal_criteria": None,
-                "description": "Beoordeelt kandidaten op technische vaardigheden, ervaring en certificeringen.",
-                "category": "Technical",
+                "description": "Beoordeelt kandidaten op motivatie, beschikbaarheid, arbeidsvoorwaarden en commitment.",
+                "category": "Recruitment",
                 "is_default": True
             },
             {
-                "name": "hr_specialist",
-                "display_name": "HR Specialist",
-                "system_prompt": "Je bent een HR Specialist gespecialiseerd in recruitment en talent acquisition. Je beoordeelt kandidaten op basis van HR-gerelateerde aspecten zoals arbeidsrecht, compliance, diversiteit en inclusie, en algemene HR-best practices.",
+                "name": "hr_recruiter",
+                "display_name": "HR Recruiter",
+                "system_prompt": """Je bent een HR / Inhouse Recruiter. Je beoordeelt op:
+
+Cultuurfit en waardenmatch
+Langetermijn-geschiktheid (duurzame inzetbaarheid, groeipotentieel)
+Communicatiestijl en houding
+Arbeidsvoorwaarden-fit (uren, salaris, flexibiliteit)
+Diversiteit & inclusie-aspecten
+Referenties / betrouwbaarheid / consistentie loopbaan
+Compliance en wettelijke volledigheid
+Beschikbaarheid voor indiensttreding
+
+Toelichting: een sterke cultuurfit kan de beoordeling op motivatie of communicatie versterken; inconsistenties met arbeidsvoorwaarden kunnen de totaalscore temperen.
+
+Wees kritisch en grondig in je evaluatie. Geef een score (1-10), benoem sterke punten, aandachtspunten, en een duidelijk advies.""",
                 "personal_criteria": None,
-                "description": "Beoordeelt kandidaten vanuit HR-perspectief: compliance, diversiteit en HR-best practices.",
+                "description": "Beoordeelt kandidaten op cultuurfit, duurzame inzetbaarheid, compliance en langetermijn-potentieel.",
                 "category": "HR",
+                "is_default": True
+            },
+            {
+                "name": "finance_director",
+                "display_name": "Finance Director",
+                "system_prompt": """Jij bent Finance Director. Je beoordeelt niet of iemand goed is in finance, maar of deze kandidaat past bij de vacature waarop hij reageert. Je kijkt vanuit jouw manier van denken: helderheid, structuur, risico-inschatting, verantwoordelijkheidsgevoel, betrouwbaarheid, communicatieve scherpte en vermogen om resultaat te leveren. Analyseer de match tussen kandidaat en vacature op de volgende punten. Concludeer zonder verzachting.
+
+Begrijpt de kandidaat de kern van wat deze functie vraagt.
+Is het ervaringsniveau van de kandidaat voldoende om de rol betrouwbaar te dragen.
+Past de manier van werken van de kandidaat bij de verantwoordelijkheden en complexiteit van de functie.
+Zijn er risico's in skills, gedrag of ervaring die de uitvoering van de rol kunnen ondermijnen.
+Sluit de motivatie en manier van redeneren van de kandidaat aan bij de inhoud en context van de functie.
+Waar zitten duidelijke sterktes die direct waarde toevoegen.
+Waar zitten duidelijke gaten die niet te negeren zijn.""",
+                "personal_criteria": None,
+                "description": "Beoordeelt kandidaten op match met vacature vanuit financieel perspectief: helderheid, structuur, risico's en resultaatgerichtheid.",
+                "category": "Finance",
                 "is_default": True
             }
         ]
         
         for template_data in default_templates:
             existing = db.query(PersonaTemplateDB).filter(PersonaTemplateDB.name == template_data["name"]).first()
-            if not existing:
+            if existing:
+                # Update existing template
+                existing.display_name = template_data["display_name"]
+                existing.system_prompt = template_data["system_prompt"]
+                existing.description = template_data["description"]
+                existing.category = template_data["category"]
+            else:
                 template = PersonaTemplateDB(**template_data)
                 db.add(template)
         
         db.commit()
         db.close()
-        print("✓ Default persona templates seeded")
+        print("✓ Default persona templates seeded/updated")
     except Exception as e:
         print(f"⚠ Could not seed default persona templates: {str(e)}")
         import traceback
         traceback.print_exc()
+
+# Call seed_default_persona_templates after function definition
+try:
+    seed_default_persona_templates()
+except Exception as e:
+    print(f"⚠ Could not seed templates on startup: {e}")
 
 # -----------------------------
 # Job posting endpoints
@@ -7430,7 +7597,8 @@ async def get_recruiter_candidates(job_id: Optional[str] = None, current_user: U
             # Get evaluation status for this candidate (check EvaluationResultDB, not EvaluationDB)
             evaluations = db.query(EvaluationResultDB).filter(
                 EvaluationResultDB.candidate_id == candidate.id,
-                EvaluationResultDB.result_type == 'evaluation'
+                EvaluationResultDB.result_type == 'evaluation',
+                EvaluationResultDB.is_archived != True  # Only count non-archived evaluations
             ).all()
             has_evaluation = len(evaluations) > 0
             
@@ -7445,6 +7613,14 @@ async def get_recruiter_candidates(job_id: Optional[str] = None, current_user: U
                         "company": job.company
                     }
             
+            # Get updated_at from the most recent evaluation if available, otherwise use candidate created_at
+            updated_at = candidate.created_at
+            if evaluations:
+                # Use the most recent evaluation's created_at as updated_at
+                most_recent_eval = max(evaluations, key=lambda e: e.created_at if e.created_at else datetime.min.replace(tzinfo=None))
+                if most_recent_eval.created_at:
+                    updated_at = most_recent_eval.created_at
+            
             result.append({
                 "id": candidate.id,
                 "name": candidate.name,
@@ -7452,6 +7628,7 @@ async def get_recruiter_candidates(job_id: Optional[str] = None, current_user: U
                 "job_id": candidate.job_id,
                 "job": job_info,
                 "created_at": candidate.created_at.isoformat() if candidate.created_at else None,
+                "updated_at": updated_at.isoformat() if updated_at else None,
                 "pipeline_stage": candidate.pipeline_stage,
                 "pipeline_status": candidate.pipeline_status,
                 "skill_tags": skill_tags,

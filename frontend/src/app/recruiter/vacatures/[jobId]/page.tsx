@@ -40,7 +40,7 @@ export default function RecruiterVacancyDetailPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isMatching, setIsMatching] = useState(false);
-  const [aiMatches, setAiMatches] = useState<Array<{candidate: Candidate; match_score: number; reasoning: string; strengths: string; concerns: string}>>([]);
+  const [aiMatches, setAiMatches] = useState<Array<{candidate_id: string; candidate_name: string; match_score: number; reasoning: string; strengths: string | string[]; concerns: string | string[]; evaluation_score?: number}>>([]);
   const [showAiMatches, setShowAiMatches] = useState(false);
 
   useEffect(() => {
@@ -346,7 +346,7 @@ export default function RecruiterVacancyDetailPage() {
                   <div className="space-y-3">
                     {aiMatches.slice(0, 5).map((match, idx) => (
                       <div
-                        key={idx}
+                        key={match.candidate_id || idx}
                         className="p-3 bg-white rounded-lg border border-blue-200 hover:border-barnes-violet transition-colors"
                       >
                         <div className="flex items-center justify-between mb-2">
@@ -355,28 +355,28 @@ export default function RecruiterVacancyDetailPage() {
                               {Math.round(match.match_score)}
                             </div>
                             <div>
-                              <div className="font-medium text-barnes-dark-violet">{match.candidate.name}</div>
+                              <div className="font-medium text-barnes-dark-violet">{match.candidate_name || 'Onbekende kandidaat'}</div>
                               <div className="text-xs text-gray-500">Match Score: {match.match_score.toFixed(1)}/10</div>
                             </div>
                           </div>
                           <input
                             type="checkbox"
-                            checked={selectedCandidates.has(match.candidate.id)}
-                            onChange={() => handleToggleCandidate(match.candidate.id)}
+                            checked={selectedCandidates.has(match.candidate_id)}
+                            onChange={() => handleToggleCandidate(match.candidate_id)}
                             className="w-5 h-5 text-barnes-violet rounded focus:ring-barnes-violet"
                           />
                         </div>
                         <div className="text-xs text-gray-600 mt-2">
                           <div className="font-medium mb-1">Redenering:</div>
-                          <div className="mb-2">{match.reasoning}</div>
-                          {match.strengths && (
+                          <div className="mb-2">{match.reasoning || 'Geen redenering beschikbaar'}</div>
+                          {match.strengths && (Array.isArray(match.strengths) ? match.strengths.length > 0 : match.strengths) && (
                             <div className="text-green-700 mb-1">
-                              <strong>Sterke punten:</strong> {match.strengths}
+                              <strong>Sterke punten:</strong> {Array.isArray(match.strengths) ? match.strengths.join(', ') : match.strengths}
                             </div>
                           )}
-                          {match.concerns && (
+                          {match.concerns && (Array.isArray(match.concerns) ? match.concerns.length > 0 : match.concerns) && (
                             <div className="text-orange-700">
-                              <strong>Aandachtspunten:</strong> {match.concerns}
+                              <strong>Aandachtspunten:</strong> {Array.isArray(match.concerns) ? match.concerns.join(', ') : match.concerns}
                             </div>
                           )}
                         </div>

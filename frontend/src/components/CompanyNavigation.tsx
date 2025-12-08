@@ -210,12 +210,16 @@ export default function CompanyNavigation({ activeModule, onModuleChange, onColl
 
       const modules = [
         { id: 'home' as const, label: 'Home', icon: 'home', IconComponent: HomeIcon },
-        { id: 'dashboard' as const, label: 'Nieuwe Evaluatie', icon: 'cog', IconComponent: CogIcon },
         { id: 'vacatures' as const, label: 'Vacatures', icon: 'briefcase', IconComponent: BriefcaseIcon },
         { id: 'personas' as const, label: 'Digitale Werknemers', icon: 'users', IconComponent: UsersIcon },
+        { id: 'notifications' as const, label: 'Notificaties', icon: 'bell', IconComponent: BellIcon },
+      ];
+
+      // Other section modules (moved from main menu)
+      const otherModules = [
+        { id: 'dashboard' as const, label: 'Nieuwe Evaluatie', icon: 'cog', IconComponent: CogIcon },
         { id: 'kandidaten' as const, label: 'Kandidaten', icon: 'document-text', IconComponent: DocumentTextIcon },
         { id: 'resultaten' as const, label: 'Resultaten', icon: 'clipboard', IconComponent: ClipboardIcon },
-        { id: 'notifications' as const, label: 'Notificaties', icon: 'bell', IconComponent: BellIcon },
       ];
 
       // Add admin modules if user is admin
@@ -224,7 +228,7 @@ export default function CompanyNavigation({ activeModule, onModuleChange, onColl
         { id: 'admin-reset' as const, label: 'Admin: Reset', icon: 'refresh', href: '/admin/reset', isLink: true },
       ] : [];
       
-      const allModules = [...modules, ...adminModules];
+      const allModules = [...modules, ...otherModules, ...adminModules];
 
   return (
     <>
@@ -336,7 +340,97 @@ export default function CompanyNavigation({ activeModule, onModuleChange, onColl
             <GlobalSearch />
           </div>
         )}
-        {allModules.map((module: any) => (
+        {modules.map((module: any) => (
+          <div key={module.id}>
+            {module.href ? (
+              <a
+                href={module.href}
+                className={`w-full flex items-center gap-3 px-4 py-3 text-left transition-colors ${
+                  'text-barnes-dark-gray hover:bg-gray-50'
+                }`}
+              >
+                {module.IconComponent ? (
+                  <module.IconComponent className={`w-5 h-5 ${activeModule === module.id ? 'text-barnes-violet' : 'text-barnes-dark-gray'}`} />
+                ) : (
+                  <span className="text-xl">{module.icon}</span>
+                )}
+                {!isCollapsed && <span className="font-medium">{module.label}</span>}
+              </a>
+            ) : (
+              <button
+                onClick={() => {
+                  onModuleChange(module.id);
+                  setIsMobileMenuOpen(false);
+                }}
+                className={`w-full flex items-center gap-3 px-4 py-3 text-left transition-colors ${
+                  activeModule === module.id
+                    ? 'bg-barnes-violet/10 text-barnes-violet border-r-2 border-barnes-violet'
+                    : 'text-barnes-dark-gray hover:bg-gray-50'
+                }`}
+              >
+                {module.IconComponent ? (
+                  <module.IconComponent className={`w-5 h-5 ${activeModule === module.id ? 'text-barnes-violet' : 'text-barnes-dark-gray'}`} />
+                ) : (
+                  <span className="text-xl">{module.icon}</span>
+                )}
+                {!isCollapsed && <span className="font-medium">{module.label}</span>}
+              </button>
+            )}
+          </div>
+        ))}
+        
+        {/* Other section */}
+        {!isCollapsed && (
+          <div className="px-4 pt-4 border-t border-gray-200">
+            <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Other</div>
+          </div>
+        )}
+        {otherModules.map((module: any) => (
+          <div key={module.id}>
+            {module.href ? (
+              <a
+                href={module.href}
+                className={`w-full flex items-center gap-3 px-4 py-3 text-left transition-colors ${
+                  'text-barnes-dark-gray hover:bg-gray-50'
+                }`}
+              >
+                {module.IconComponent ? (
+                  <module.IconComponent className={`w-5 h-5 ${activeModule === module.id ? 'text-barnes-violet' : 'text-barnes-dark-gray'}`} />
+                ) : (
+                  <span className="text-xl">{module.icon}</span>
+                )}
+                {!isCollapsed && <span className="font-medium">{module.label}</span>}
+              </a>
+            ) : (
+              <button
+                onClick={() => {
+                  onModuleChange(module.id);
+                  setIsMobileMenuOpen(false);
+                }}
+                className={`w-full flex items-center gap-3 px-4 py-3 text-left transition-colors ${
+                  activeModule === module.id
+                    ? 'bg-barnes-violet/10 text-barnes-violet border-r-2 border-barnes-violet'
+                    : 'text-barnes-dark-gray hover:bg-gray-50'
+                }`}
+              >
+                {module.IconComponent ? (
+                  <module.IconComponent className={`w-5 h-5 ${activeModule === module.id ? 'text-barnes-violet' : 'text-barnes-dark-gray'}`} />
+                ) : (
+                  <span className="text-xl">{module.icon}</span>
+                )}
+                {!isCollapsed && <span className="font-medium">{module.label}</span>}
+              </button>
+            )}
+          </div>
+        ))}
+        
+        {/* Admin modules */}
+        {adminModules.length > 0 && !isCollapsed && (
+          <div className="px-4 pt-4 border-t border-gray-200">
+            <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Admin</div>
+          </div>
+        )}
+        {adminModules.map((module: any) => (
           <div key={module.id}>
             {module.href ? (
               <a
