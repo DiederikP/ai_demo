@@ -719,6 +719,7 @@ SCHEMA_COLUMN_UPDATES = [
     ("job_postings", "weighted_requirements", "TEXT"),
     ("personas", "company_id", "TEXT"),
     ("personas", "personal_criteria", "TEXT"),
+    ("personas", "template_id", "TEXT"),
     ("personas", "created_at", "TIMESTAMP WITH TIME ZONE"),
     ("personas", "updated_at", "TIMESTAMP WITH TIME ZONE"),
     ("candidates", "motivation_reason", "TEXT"),
