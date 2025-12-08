@@ -7595,10 +7595,15 @@ async def get_recruiter_candidates(job_id: Optional[str] = None, current_user: U
                     skill_tags = candidate.skill_tags
             
             # Get evaluation status for this candidate (check EvaluationResultDB, not EvaluationDB)
+            # Use or_ to handle both SQLite (BOOLEAN) and PostgreSQL (INTEGER) compatibility
             evaluations = db.query(EvaluationResultDB).filter(
                 EvaluationResultDB.candidate_id == candidate.id,
                 EvaluationResultDB.result_type == 'evaluation',
-                EvaluationResultDB.is_archived != True  # Only count non-archived evaluations
+                or_(
+                    EvaluationResultDB.is_archived == False,
+                    EvaluationResultDB.is_archived == None,
+                    EvaluationResultDB.is_archived == 0
+                )  # Only count non-archived evaluations (works with both BOOLEAN and INTEGER)
             ).all()
             has_evaluation = len(evaluations) > 0
             
