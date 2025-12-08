@@ -122,28 +122,6 @@ export default function CompanyHome() {
     );
   }
 
-  // Show review candidates tab if active
-  if (activeTab === 'review') {
-    return (
-      <div className="max-w-7xl mx-auto">
-        <div className="mb-6">
-          <div className="flex items-center gap-4 mb-4">
-            <button
-              onClick={() => setActiveTab('overview')}
-              className="text-barnes-dark-gray hover:text-barnes-violet transition-colors"
-            >
-              ← Terug naar overzicht
-            </button>
-          </div>
-          <h1 className="text-2xl font-semibold text-barnes-dark-violet mb-2">
-            Bedrijfsportal
-          </h1>
-        </div>
-        <ReviewCandidates />
-      </div>
-    );
-  }
-
   return (
     <div className="max-w-7xl mx-auto">
       {/* Hero Section */}
@@ -181,6 +159,12 @@ export default function CompanyHome() {
           </button>
         </div>
       </div>
+
+      {/* Show review candidates tab if active */}
+      {activeTab === 'review' ? (
+        <ReviewCandidates />
+      ) : (
+        <>
 
       {/* Stats Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
@@ -347,6 +331,8 @@ export default function CompanyHome() {
           </div>
         </div>
       </div>
+        </>
+      )}
     </div>
   );
 }
